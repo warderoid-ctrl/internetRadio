@@ -238,12 +238,12 @@ static bool localIntent(const char *t, char *reply, size_t rn) {
   if (has(t, "volume") || has(t, "set the volume")) { int v = firstNumber(k); if (v >= 0) { act(VA_VOL_SET, constrain(v > 21 ? v / 5 : v, 0, 21)); snprintf(reply, rn, "Volume set."); return true; } }
   if (hasAny(t, {"stop the radio", "turn off the radio", "radio off", "stop the music", "pause", "be quiet", "shut up", "stop playing", "turn off the music"})) { act(VA_STOP); snprintf(reply, rn, ""); return true; }
   if (hasAny(t, {"play", "radio", "music", "listen"})) {
-    for (int i = 0; i < N_STATIONS; i++) {
-      char nm[40]; normalise(STATIONS[i].name, nm, sizeof(nm));
+    for (int i = 0; i < nFavs; i++) {
+      char nm[48]; normalise(favs[i].name, nm, sizeof(nm));
       char first[24]; strlcpy(first, nm, sizeof(first)); char *sp = strchr(first, ' '); if (sp && strlen(nm) > 5 && !strncmp(nm, "somafm", 6)) { /* "somafm groove salad" -> match tail words */ }
       const char *tail = !strncmp(nm, "somafm ", 7) ? nm + 7 : nm;
       if (strstr(t, tail) || (!strncmp(nm, "radio paradise", 14) && has(t, "paradise")) || (!strncmp(nm, "classic", 7) && has(t, "classic")) || (has(nm, "nts 1") && hasAny(t, {"nts one", "nts 1"})) || (has(nm, "nts 2") && hasAny(t, {"nts two", "nts 2"})) || (has(nm, "kexp") && has(t, "kexp")) || (has(nm, "jazz") && has(t, "jazz"))) {
-        act(VA_STATION, i); snprintf(reply, rn, "Playing %s.", STATIONS[i].name); return true;
+        act(VA_STATION, i); snprintf(reply, rn, "Playing %s.", favs[i].name); return true;
       }
     }
     act(VA_RESUME); snprintf(reply, rn, "Playing the radio."); return true;
@@ -378,7 +378,7 @@ static void voiceActions() {
       case VA_TIMER: if (timerStart(v.a, v.s) >= 0) showPage(PG_TIMERS); else postUi(UM_TOAST, "All 3 timers are busy", C_WARN); break;
       case VA_TIMER_CLEAR: for (int i = 0; i < N_SLOTS; i++) if (slots[i].active) timerClear(i); lv_obj_add_flag(alarmOv, LV_OBJ_FLAG_HIDDEN); break;
       case VA_STATION: resumeStation = -1; playStation(v.a); break;
-      case VA_RESUME: resumeStation = -1; playStation(curStation); break;
+      case VA_RESUME: resumeStation = -1; playCurrent(); break;
       case VA_STOP: radioStop(); break;
       case VA_VOL_DELTA: setVolume(volume + v.a); break;
       case VA_VOL_SET: setVolume(v.a); break;

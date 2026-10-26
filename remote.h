@@ -63,10 +63,10 @@ static String jsonEsc(const char *s) { String o; for (; *s; s++) { if (*s == '"'
 
 static void hState() {
   if (!authed()) return deny();
-  String o = "{\"station\":\"" + jsonEsc(STATIONS[curStation].name) + "\",\"title\":\"";
+  String o = "{\"station\":\"" + jsonEsc(curSt.name) + "\",\"title\":\"";
   if (xSemaphoreTake(metaMx, 20) == pdTRUE) { o += jsonEsc(metaTitle); xSemaphoreGive(metaMx); }
   o += "\",\"status\":\"" + String(playState == 2 ? "Live" : playState == 1 ? "Connecting" : playState == 3 ? "Problem" : "Stopped") + "\",\"vol\":" + String(volume) + ",\"stations\":[";
-  for (int i = 0; i < N_STATIONS; i++) { if (i) o += ","; o += "\"" + jsonEsc(STATIONS[i].name) + "\""; }
+  for (int i = 0; i < nFavs; i++) { if (i) o += ","; o += "\"" + jsonEsc(favs[i].name) + "\""; }
   o += "]}";
   server.send(200, "application/json", o);
 }
