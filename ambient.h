@@ -5,6 +5,12 @@
 #define MAX_PHOTOS 150
 #define BL_AMBIENT 70
 #define BL_NIGHT   215
+// Photos that overhang the screen after "cover" scaling (portraits, panoramas) are kept up to 1.5x the screen in
+// that direction and panned slowly across while shown. Buffers are sized for the largest case.
+#define PAN_MAX_W   (SCREEN_W * 3 / 2)
+#define PAN_MAX_H   (SCREEN_H * 3 / 2)
+#define PAN_MIN_PX  40                                          // less overhang than this: just crop, don't pan
+#define PHOTO_BUF_PX ((uint32_t)SCREEN_W * PAN_MAX_H > (uint32_t)PAN_MAX_W * SCREEN_H ? (uint32_t)SCREEN_W * PAN_MAX_H : (uint32_t)PAN_MAX_W * SCREEN_H)
 
 static lv_obj_t *scrAmbient, *imgFront, *imgBack;
 static lv_obj_t *ambPhotoUi, *ambClockUi;                      // overlay groups for the two looks
@@ -114,7 +120,7 @@ static float coverScale(int w, int h) {
   return (w > 0 && h > 0) ? std::max((float)SCREEN_W / w, (float)SCREEN_H / h) : 1.0f;
 }
 
-static bool decodeInto(uint16_t *dst, const PhotoRef &p) {
+static bool decodeInto(uint16_t *dst, const PhotoRef &p, int &bw, int &bh) {
   fs::FS &fsys = (p.src == 1)
 #if ENABLE_SD
     ? (fs::FS &)SD
@@ -122,40 +128,75 @@ static bool decodeInto(uint16_t *dst, const PhotoRef &p) {
     ? (fs::FS &)LittleFS
 #endif
     : (fs::FS &)LittleFS;
-  photoSpr.setColorDepth(16);
-  photoSpr.setBuffer(dst, SCREEN_W, SCREEN_H, 16);
-  photoSpr.fillScreen(TFT_BLACK);
   const char *dot = strrchr(p.path, '.');
-  bool ok = false;
-  // x/y is the top-left of a SCREEN_W x SCREEN_H box; middle_center centres the scaled image in it and the box clips
-  // the overhang (passing the screen centre as x/y put the image's top-left there: only a quarter was visible)
+  bool isBmp = !strcasecmp(dot, ".bmp"), isPng = !strcasecmp(dot, ".png");
   int w = 0, h = 0;
-  if (!strcasecmp(dot, ".bmp")) ok = photoSpr.drawBmpFile(fsys, p.path, 0, 0, SCREEN_W, SCREEN_H, 0, 0, 1.0f, 0.0f, lgfx::datum_t::middle_center);
-  else if (!strcasecmp(dot, ".png")) {
-    float sc = pngDims(fsys, p.path, w, h) ? coverScale(w, h) : 1.0f;
-    ok = photoSpr.drawPngFile(fsys, p.path, 0, 0, SCREEN_W, SCREEN_H, 0, 0, sc, sc, lgfx::datum_t::middle_center);
-  } else {
-    float sc = jpegDims(fsys, p.path, w, h) ? coverScale(w, h) : 1.0f;
-    ok = photoSpr.drawJpgFile(fsys, p.path, 0, 0, SCREEN_W, SCREEN_H, 0, 0, sc, sc, lgfx::datum_t::middle_center);
+  bool dims = isBmp ? false : isPng ? pngDims(fsys, p.path, w, h) : jpegDims(fsys, p.path, w, h);
+  float sc = dims ? coverScale(w, h) : 1.0f;
+  // decoded size: the screen, grown in the overhanging direction (capped) when that's worth panning
+  bw = SCREEN_W; bh = SCREEN_H;
+  if (dims) {
+    int sw = (int)(w * sc), sh = (int)(h * sc);
+    if (sw - SCREEN_W >= PAN_MIN_PX) bw = std::min(sw, PAN_MAX_W);
+    if (sh - SCREEN_H >= PAN_MIN_PX) bh = std::min(sh, PAN_MAX_H);
   }
+  photoSpr.setColorDepth(16);
+  photoSpr.setBuffer(dst, bw, bh, 16);
+  photoSpr.fillScreen(TFT_BLACK);
+  // x/y is the top-left of a bw x bh box; middle_center centres the scaled image in it and the box clips the rest
+  bool ok;
+  if (isBmp) ok = photoSpr.drawBmpFile(fsys, p.path, 0, 0, bw, bh, 0, 0, 1.0f, 0.0f, lgfx::datum_t::middle_center);
+  else if (isPng) ok = photoSpr.drawPngFile(fsys, p.path, 0, 0, bw, bh, 0, 0, sc, sc, lgfx::datum_t::middle_center);
+  else ok = photoSpr.drawJpgFile(fsys, p.path, 0, 0, bw, bh, 0, 0, sc, sc, lgfx::datum_t::middle_center);
   if (ok && sprSwap) {
-    uint32_t n = SCREEN_W * SCREEN_H;
+    uint32_t n = (uint32_t)bw * bh;
     for (uint32_t i = 0; i < n; i++) dst[i] = (uint16_t)((dst[i] >> 8) | (dst[i] << 8));
   }
   return ok;
 }
 
 static void fadeCb(void *o, int32_t v) { lv_obj_set_style_opa((lv_obj_t *)o, (lv_opa_t)v, 0); }
+static void panXCb(void *o, int32_t v) { lv_obj_set_x((lv_obj_t *)o, v); }
+static void panYCb(void *o, int32_t v) { lv_obj_set_y((lv_obj_t *)o, v); }
+
+static void setPhotoSize(lv_image_dsc_t &d, int w, int h) {
+  d.header.w = w; d.header.h = h;
+  d.header.stride = w * 2;
+  d.data_size = (uint32_t)w * h * 2;
+}
+// glide from one end of the overhang to the other while the photo is up (fade in + slide time), alternating ends
+static void startPan(lv_obj_t *img, int w, int h) {
+  static bool fromEnd = false;
+  lv_anim_delete(img, panXCb); lv_anim_delete(img, panYCb);
+  int ox = SCREEN_W - w, oy = SCREEN_H - h;                      // <= 0: how far the image can slide
+  lv_obj_set_pos(img, ox / 2, oy / 2);
+  if (ox == 0 && oy == 0) return;
+  fromEnd = !fromEnd;
+  bool horiz = ox != 0;
+  int32_t span = horiz ? ox : oy;
+  lv_anim_t a; lv_anim_init(&a);
+  lv_anim_set_var(&a, img);
+  lv_anim_set_exec_cb(&a, horiz ? panXCb : panYCb);
+  lv_anim_set_values(&a, fromEnd ? span : 0, fromEnd ? 0 : span);
+  lv_anim_set_duration(&a, (uint32_t)AMBIENT_SLIDE_SEC * 1000UL + 900);
+  lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+  lv_anim_start(&a);
+}
 
 static bool nextPhoto() {
   if (nPhotos == 0 || !bufA || !bufB) return false;
   for (int tries = 0; tries < nPhotos && tries < 4; tries++) {
     photoIdx = (photoIdx + 1) % nPhotos;
     uint16_t *dst = frontIsA ? bufB : bufA;                    // decode into the hidden buffer
-    if (!decodeInto(dst, photos[photoIdx])) continue;
+    int w, h;
+    if (!decodeInto(dst, photos[photoIdx], w, h)) continue;
     lv_obj_t *back = frontIsA ? imgBack : imgFront;
     lv_obj_t *front = frontIsA ? imgFront : imgBack;
-    lv_image_set_src(back, frontIsA ? &dscB : &dscA);
+    lv_image_dsc_t &d = frontIsA ? dscB : dscA;
+    setPhotoSize(d, w, h);
+    lv_image_cache_drop(&d);
+    lv_image_set_src(back, &d);
+    startPan(back, w, h);
     lv_obj_set_style_opa(back, LV_OPA_TRANSP, 0);
     lv_obj_move_foreground(back);
     lv_obj_move_foreground(ambPhotoUi);                        // overlay stays on top
@@ -185,17 +226,15 @@ static void ambientBuild() {
   lv_obj_remove_flag(scrAmbient, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_event_cb(scrAmbient, onAmbientTap, LV_EVENT_CLICKED, nullptr);
 
-  bufA = (uint16_t *)heap_caps_malloc(SCREEN_W * SCREEN_H * 2, MALLOC_CAP_SPIRAM);
-  bufB = (uint16_t *)heap_caps_malloc(SCREEN_W * SCREEN_H * 2, MALLOC_CAP_SPIRAM);
+  bufA = (uint16_t *)heap_caps_malloc(PHOTO_BUF_PX * 2, MALLOC_CAP_SPIRAM);
+  bufB = (uint16_t *)heap_caps_malloc(PHOTO_BUF_PX * 2, MALLOC_CAP_SPIRAM);
   lv_image_dsc_t *ds[2] = {&dscA, &dscB};
   uint16_t *bs[2] = {bufA, bufB};
   for (int i = 0; i < 2; i++) {
     memset(ds[i], 0, sizeof(lv_image_dsc_t));
     ds[i]->header.magic = LV_IMAGE_HEADER_MAGIC;
     ds[i]->header.cf = LV_COLOR_FORMAT_RGB565;
-    ds[i]->header.w = SCREEN_W; ds[i]->header.h = SCREEN_H;
-    ds[i]->header.stride = SCREEN_W * 2;
-    ds[i]->data_size = SCREEN_W * SCREEN_H * 2;
+    setPhotoSize(*ds[i], SCREEN_W, SCREEN_H);
     ds[i]->data = (const uint8_t *)bs[i];
   }
   imgFront = lv_image_create(scrAmbient); lv_obj_set_pos(imgFront, 0, 0);
