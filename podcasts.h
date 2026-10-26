@@ -3,7 +3,7 @@
 // show's RSS feed. SoundCloud accounts publish such feeds too (Benji B, The Lot Radio). netTask does the fetching.
 // You follow shows; "New" merges the latest episodes of every followed show (refreshed every few hours).
 
-struct Pod { char name[64]; char author[48]; char feed[256]; };
+struct Pod { char name[64]; char author[48]; char feed[256]; char art[160]; };   // art: cover image URL
 #define MAX_PODS 20
 #define PODS_PATH "/pods.json"
 static const struct { const char *name, *author, *feed; } DEFAULT_PODS[] = {
@@ -19,6 +19,7 @@ static Episode *eps = nullptr;                                // PSRAM
 static volatile int nEps = 0;                                 // -1 = feed failed
 static volatile uint8_t epVer = 0;
 static char epFeed[256];
+static char epArt[160];                                      // cover of the show being browsed
 static volatile bool reqEpisodes = false;
 
 #define POD_HITS 20
@@ -29,7 +30,7 @@ static char podQuery[48];
 static volatile bool reqPodSearch = false;
 
 // "New": latest episodes across followed shows, newest first
-struct NewEp { Episode e; char show[48]; uint32_t day; };      // day = yyyymmdd, for sorting
+struct NewEp { Episode e; char show[48]; char art[160]; uint32_t day; };   // day = yyyymmdd, for sorting
 #define MAX_NEW 40
 #define NEW_PER_SHOW 3
 #define NEW_PATH "/newEps.json"
@@ -63,7 +64,7 @@ static void podsSave() {
   if (!f) return;
   JsonDocument d;
   JsonArray a = d.to<JsonArray>();
-  for (int i = 0; i < nPods; i++) { JsonObject o = a.add<JsonObject>(); o["n"] = pods[i].name; o["a"] = pods[i].author; o["f"] = pods[i].feed; }
+  for (int i = 0; i < nPods; i++) { JsonObject o = a.add<JsonObject>(); o["n"] = pods[i].name; o["a"] = pods[i].author; o["f"] = pods[i].feed; if (pods[i].art[0]) o["i"] = pods[i].art; }
   serializeJson(d, f);
   f.close();
 }
@@ -71,6 +72,7 @@ static void setPod(Pod &p, const char *name, const char *author, const char *fee
   copyAscii(p.name, sizeof(p.name), name);
   copyAscii(p.author, sizeof(p.author), author);
   strlcpy(p.feed, feed, sizeof(p.feed));
+  p.art[0] = 0;
 }
 static uint32_t dayKey(const char *when) {                    // "21 Oct 2026" -> 20261021
   static const char *M = "JanFebMarAprMayJunJulAugSepOctNovDec";
@@ -86,7 +88,7 @@ static void newEpsSave() {
   JsonArray a = d.to<JsonArray>();
   for (int i = 0; i < nNew; i++) {
     JsonObject o = a.add<JsonObject>();
-    o["t"] = newEps[i].e.title; o["w"] = newEps[i].e.when; o["u"] = newEps[i].e.url; o["s"] = newEps[i].show; o["d"] = newEps[i].day;
+    o["t"] = newEps[i].e.title; o["w"] = newEps[i].e.when; o["u"] = newEps[i].e.url; o["s"] = newEps[i].show; o["d"] = newEps[i].day; o["a"] = newEps[i].art;
   }
   serializeJson(d, f);
   f.close();
@@ -103,6 +105,7 @@ static void newEpsLoad() {
       strlcpy(x.e.title, o["t"] | "", sizeof(x.e.title)); strlcpy(x.e.when, o["w"] | "", sizeof(x.e.when));
       strlcpy(x.e.url, o["u"] | "", sizeof(x.e.url)); strlcpy(x.show, o["s"] | "", sizeof(x.show));
       x.day = o["d"] | 0;
+      strlcpy(x.art, o["a"] | "", sizeof(x.art));
     }
   f.close();
   nNew = n;
@@ -121,7 +124,7 @@ static void podsLoad() {                                      // after LittleFS.
   if (f) {
     JsonDocument d;
     if (!deserializeJson(d, f))
-      for (JsonObject o : d.as<JsonArray>()) { if (nPods >= MAX_PODS) break; setPod(pods[nPods++], o["n"] | "", o["a"] | "", o["f"] | ""); }
+      for (JsonObject o : d.as<JsonArray>()) { if (nPods >= MAX_PODS) break; setPod(pods[nPods], o["n"] | "", o["a"] | "", o["f"] | ""); strlcpy(pods[nPods++].art, o["i"] | "", sizeof(pods[0].art)); }
     f.close();
   } else {
     for (auto &p : DEFAULT_PODS) setPod(pods[nPods++], p.name, p.author, p.feed);
@@ -144,8 +147,9 @@ static bool podToggle(const Pod &p) {                        // returns true if 
 // ───────────── RSS feed reader: streams the feed and stops after MAX_EPS episodes (feeds can be megabytes) ─────────────
 class RssSink : public Stream {
 public:
-  RssSink(Episode *out, int max) : out(out), max(max) {}
+  RssSink(Episode *out, int max) : out(out), max(max) { chanArt[0] = 0; }
   int n = 0;
+  char chanArt[160];                                          // the show's cover image
   int available() override { return 0; }
   int read() override { return -1; }
   int peek() override { return -1; }
@@ -200,7 +204,13 @@ private:
       if (cur.url[0] && n < max) { if (!cur.title[0]) strlcpy(cur.title, "Episode", sizeof(cur.title)); out[n++] = cur; }
       return;
     }
-    if (!inItem) return;
+    if (!inItem) {
+      if (!chanArt[0] && !strncmp(tag, "itunes:image ", 13)) {
+        const char *u = strstr(tag, "href=\"");
+        if (u) { u += 6; const char *e = strchr(u, '"'); if (e && e - u < (int)sizeof(chanArt)) { memcpy(chanArt, u, e - u); chanArt[e - u] = 0; } }
+      }
+      return;
+    }
     if (!strcmp(tag, "title")) { field = F_TITLE; xl = 0; }
     else if (!strcmp(tag, "pubDate")) { field = F_DATE; xl = 0; }
     else if (!strncmp(tag, "enclosure ", 10)) {
@@ -222,6 +232,9 @@ static void podEpisodesFetch() {                              // netTask
   RssSink sink(eps, MAX_EPS);
   int code = eps ? httpStream(epFeed, sink) : -1;
   nEps = (code == 200 || sink.n > 0) ? sink.n : -1;          // stopping early reports a write error: that's fine
+  strlcpy(epArt, sink.chanArt, sizeof(epArt));
+  int pi = podFind(epFeed);
+  if (pi >= 0 && sink.chanArt[0] && strcmp(pods[pi].art, sink.chanArt)) { strlcpy(pods[pi].art, sink.chanArt, sizeof(pods[0].art)); podsSave(); }
   epVer++;
 }
 
@@ -243,8 +256,11 @@ static void newEpsFetch() {
       NewEp &x = all[n++];
       x.e = buf[k];
       strlcpy(x.show, snap[i].name, sizeof(x.show));
+      strlcpy(x.art, sink.chanArt[0] ? sink.chanArt : snap[i].art, sizeof(x.art));
       x.day = dayKey(buf[k].when);
     }
+    int pi = podFind(snap[i].feed);                            // remember covers found in the feed
+    if (pi >= 0 && sink.chanArt[0] && strcmp(pods[pi].art, sink.chanArt)) { strlcpy(pods[pi].art, sink.chanArt, sizeof(pods[0].art)); podsSave(); }
   }
   std::sort(all, all + n, [](const NewEp &a, const NewEp &b) { return a.day > b.day; });
   if (n > 0 || np == 0) {                                     // keep the old list if everything failed (no Wi-Fi)
@@ -270,7 +286,7 @@ static void podSearchFetch() {                                // netTask
   int n = -1;
   if (podHits && httpGet(url.c_str(), body) == 200) {
     JsonDocument filter;
-    filter["results"][0]["collectionName"] = true; filter["results"][0]["artistName"] = true; filter["results"][0]["feedUrl"] = true;
+    filter["results"][0]["collectionName"] = true; filter["results"][0]["artistName"] = true; filter["results"][0]["feedUrl"] = true; filter["results"][0]["artworkUrl100"] = true;
     JsonDocument doc;
     if (!deserializeJson(doc, body, DeserializationOption::Filter(filter))) {
       n = 0;
@@ -278,7 +294,10 @@ static void podSearchFetch() {                                // netTask
         if (n >= POD_HITS) break;
         const char *f = r["feedUrl"] | "";
         if (!f[0] || strlen(f) >= sizeof(Pod::feed)) continue;
-        setPod(podHits[n++], r["collectionName"] | "", r["artistName"] | "", f);
+        setPod(podHits[n], r["collectionName"] | "", r["artistName"] | "", f);
+        const char *art = r["artworkUrl100"] | "";
+        if (strlen(art) < sizeof(podHits[0].art)) strlcpy(podHits[n].art, art, sizeof(podHits[0].art));
+        n++;
       }
     }
   }

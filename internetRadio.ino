@@ -45,6 +45,7 @@
 #include "ui_common.h"
 #include "rtc.h"
 #include "net_util.h"
+#include "art.h"
 #include "radio_app.h"
 #include "podcasts.h"
 #include "weather.h"
@@ -594,7 +595,8 @@ static void pcLayout(bool kb) {
 }
 static lv_obj_t *pcRow() {
   lv_obj_t *row = lv_button_create(pcList);
-  lv_obj_set_size(row, 688, 66);
+  lv_obj_set_size(row, 688, 72);
+  lv_obj_set_style_pad_all(row, 4, 0);
   lv_obj_set_style_bg_color(row, lv_color_hex(C_CARD2), 0);
   lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
   lv_obj_set_style_bg_color(row, lv_color_hex(C_CARD3), LV_STATE_PRESSED);
@@ -603,24 +605,25 @@ static lv_obj_t *pcRow() {
   lv_obj_set_style_border_width(row, 0, 0);
   return row;
 }
-static void pcTwoLines(lv_obj_t *row, const char *a, const char *b, int w, bool dot = false) {
-  int x = dot ? 22 : 4;
+static void pcTwoLines(lv_obj_t *row, const char *a, const char *b, int w, bool dot = false, const char *art = nullptr) {
+  int x = 74;
+  artImage(row, 0, 0, art);
   if (dot) {                                            // unplayed marker
-    lv_obj_t *d = panel(row, 2, 12, 10, 10, C_ACCENT, LV_RADIUS_CIRCLE);
+    lv_obj_t *d = panel(row, x, 14, 10, 10, C_ACCENT, LV_RADIUS_CIRCLE);
     lv_obj_remove_flag(d, LV_OBJ_FLAG_CLICKABLE);
+    x += 18;
   }
   lv_obj_t *n = mkLabel(row, a, F_M, C_TEXT);
-  lv_obj_set_width(n, w - x);
-  lv_label_set_long_mode(n, LV_LABEL_LONG_DOT);
-  lv_obj_set_pos(n, x, 0);
+  oneLine(n, w - x, true);
+  lv_obj_set_pos(n, x, 6);
   lv_obj_t *d = mkLabel(row, b, F_XS, C_MUTED);
-  lv_obj_set_width(d, w - x);
-  lv_label_set_long_mode(d, LV_LABEL_LONG_DOT);
-  lv_obj_set_pos(d, x, 30);
+  oneLine(d, w - 74, false);
+  lv_obj_set_pos(d, 74, 36);
 }
-static void pcPlay(const Episode &ep, const char *show) {
+static void pcPlay(const Episode &ep, const char *show, const char *art) {
   Station s;
   setStation(s, ep.title, show, ep.url);
+  strlcpy(s.logo, art, sizeof(s.logo));
   s.kind = 1;
   podMarkPlayed(ep.url);
   playStationData(s, -1);
@@ -632,12 +635,12 @@ static void pcNewList() {                               // "New": latest across 
   for (int i = 0; i < nNew; i++) {
     lv_obj_t *row = pcRow();
     char d[80]; snprintf(d, sizeof(d), "%s  -  %s", newEps[i].show, newEps[i].e.when);
-    pcTwoLines(row, newEps[i].e.title, d, 680, !podIsPlayed(newEps[i].e.url));
+    pcTwoLines(row, newEps[i].e.title, d, 680, !podIsPlayed(newEps[i].e.url), newEps[i].art);
     lv_obj_add_event_cb(row, [](lv_event_t *e) {
       int k = (int)(intptr_t)lv_event_get_user_data(e);
       if (k >= nNew) return;
       NewEp x = newEps[k];
-      pcPlay(x.e, x.show);
+      pcPlay(x.e, x.show, x.art);
     }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
   }
   int n = nNew;
@@ -674,9 +677,9 @@ static void pcShowsList(bool results) {                 // followed shows, or se
     const Pod &p = results ? podHits[i] : pods[i];
     int k = results ? 100 + i : i;
     lv_obj_t *row = pcRow();
-    pcTwoLines(row, p.name, p.author, 600);
+    pcTwoLines(row, p.name, p.author, 600, false, p.art);
     lv_obj_add_event_cb(row, onPcShow, LV_EVENT_CLICKED, (void *)(intptr_t)k);
-    textBtn(row, 610, 0, 64, 46, podFind(p.feed) >= 0 ? LV_SYMBOL_OK : LV_SYMBOL_PLUS, F_M, C_CARD3, onPcFollow, (void *)(intptr_t)k);
+    textBtn(row, 610, 9, 64, 46, podFind(p.feed) >= 0 ? LV_SYMBOL_OK : LV_SYMBOL_PLUS, F_M, C_CARD3, onPcFollow, (void *)(intptr_t)k);
   }
 }
 static void pcShowTab(int t) {
@@ -696,7 +699,7 @@ static void onPcRefresh(lv_event_t *) {
 }
 static void onPcEpisode(lv_event_t *e) {
   int k = (int)(intptr_t)lv_event_get_user_data(e);
-  if (k < nEps) { Episode ep = eps[k]; pcPlay(ep, pcShowName); }
+  if (k < nEps) { Episode ep = eps[k]; pcPlay(ep, pcShowName, epArt); }
 }
 static void pcTick(lv_timer_t *) {
   static uint8_t seenEp = 0, seenHit = 0, seenNew = 0;
@@ -709,7 +712,7 @@ static void pcTick(lv_timer_t *) {
     lv_label_set_text_fmt(pcStatus, "%s - latest %d episodes", pcShowName, (int)nEps);
     for (int i = 0; i < nEps; i++) {
       lv_obj_t *row = pcRow();
-      pcTwoLines(row, eps[i].title, eps[i].when, 680, !podIsPlayed(eps[i].url));
+      pcTwoLines(row, eps[i].title, eps[i].when, 680, !podIsPlayed(eps[i].url), epArt);
       lv_obj_add_event_cb(row, onPcEpisode, LV_EVENT_CLICKED, (void *)(intptr_t)i);
     }
   }
@@ -920,7 +923,9 @@ static void findTick(lv_timer_t *) {
   lv_label_set_text_fmt(findStatus, "%d stations - tap to play, " LV_SYMBOL_PLUS " to keep", (int)rbN);
   for (int i = 0; i < rbN; i++) {
     lv_obj_t *row = lv_button_create(findList);
-    lv_obj_set_size(row, 736, 66);
+    lv_obj_set_size(row, 736, 72);
+    lv_obj_set_style_pad_all(row, 4, 0);
+    artImage(row, 0, 0, rbHits[i].s.logo);
     lv_obj_set_style_bg_color(row, lv_color_hex(C_CARD2), 0);
     lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(row, lv_color_hex(C_CARD3), LV_STATE_PRESSED);
@@ -928,15 +933,13 @@ static void findTick(lv_timer_t *) {
     lv_obj_set_style_shadow_width(row, 0, 0);
     lv_obj_set_style_border_width(row, 0, 0);
     lv_obj_t *name = mkLabel(row, rbHits[i].s.name, F_M, C_TEXT);
-    lv_obj_set_width(name, 600);
-    lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
-    lv_obj_set_pos(name, 4, 0);
+    oneLine(name, 560, true);
+    lv_obj_set_pos(name, 74, 6);
     lv_obj_t *det = mkLabel(row, rbHits[i].detail, F_XS, C_MUTED);
-    lv_obj_set_width(det, 600);
-    lv_label_set_long_mode(det, LV_LABEL_LONG_DOT);
-    lv_obj_set_pos(det, 4, 30);
+    oneLine(det, 560, false);
+    lv_obj_set_pos(det, 74, 36);
     lv_obj_add_event_cb(row, onFindPlay, LV_EVENT_CLICKED, (void *)(intptr_t)i);
-    lv_obj_t *fb = textBtn(row, 650, 0, 64, 46, "", F_M, C_CARD3, onFindFav, (void *)(intptr_t)i);
+    lv_obj_t *fb = textBtn(row, 650, 9, 64, 46, "", F_M, C_CARD3, onFindFav, (void *)(intptr_t)i);
     findFavLabel(fb, rbHits[i].s);
   }
 }
@@ -1205,6 +1208,8 @@ static void netTask(void *) {
       if (rbReq) { uint8_t r = rbReq; rbReq = RB_NONE; radioStationsFetch(r); }
       if (reqPlaces) { reqPlaces = false; radioPlacesFetch(); }
       if (reqEpisodes) { reqEpisodes = false; podEpisodesFetch(); }
+      artNetTick();                                         // logos / artwork, one per pass
+      radioLogoTick();
       static uint32_t lastNew = 0;                         // podcasts "New": at boot, every 3 h, and on follow changes
       if (reqNewEps || !lastNew || now - lastNew > 3UL * 3600000UL) { reqNewEps = false; lastNew = now; newEpsFetch(); }
       if (reqPodSearch) { reqPodSearch = false; podSearchFetch(); }
@@ -1268,6 +1273,7 @@ static void uiTick(lv_timer_t *) {
   if (toastUntil && (int32_t)(now - toastUntil) >= 0) { toastUntil = 0; lv_obj_add_flag(toastBox, LV_OBJ_FLAG_HIDDEN); }
 
   radioTick(netState == NET_UP);
+  artUiTick();
   char chip[24];
   bool anyTimer = timersTick(chip, sizeof(chip));
   if (anyTimer) { lv_label_set_text(btnLabel(hdrTimer), chip); lv_obj_remove_flag(hdrTimer, LV_OBJ_FLAG_HIDDEN); } else lv_obj_add_flag(hdrTimer, LV_OBJ_FLAG_HIDDEN);
@@ -1343,6 +1349,7 @@ void setup() {
   setBrightness(brightPct);
 
   lfsOk = LittleFS.begin(true);
+  artInit();
   favsLoad();
   podsLoad();
 #if ENABLE_SD
@@ -1355,7 +1362,7 @@ void setup() {
   // One draw buffer in INTERNAL RAM. The RGB panel streams its frame buffer out of PSRAM non-stop; rendering into
   // PSRAM as well starves it and the picture shakes / tears sideways. dispFlush copies synchronously, so a second
   // buffer would buy nothing.
-  const uint32_t bufBytes = SCREEN_W * 16 * 2;
+  const uint32_t bufBytes = SCREEN_W * 10 * 2;
   drawBuf1 = (uint8_t *)heap_caps_malloc(bufBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   if (!drawBuf1) drawBuf1 = (uint8_t *)heap_caps_malloc(bufBytes, MALLOC_CAP_SPIRAM);
   drawBuf2 = nullptr;

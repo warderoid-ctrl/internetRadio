@@ -121,6 +121,12 @@ static lv_obj_t *textBtn(lv_obj_t *parent, int x, int y, int w, int h, const cha
   return b;
 }
 static lv_obj_t *btnLabel(lv_obj_t *btn) { return lv_obj_get_child(btn, 0); }
+// keep a label on one line: LONG_DOT / scrolling only work once the height is fixed (else LVGL wraps the text)
+static void oneLine(lv_obj_t *l, int w, bool scroll) {
+  lv_obj_set_width(l, w);
+  lv_obj_set_height(l, lv_font_get_line_height(lv_obj_get_style_text_font(l, 0)));
+  lv_label_set_long_mode(l, scroll ? LV_LABEL_LONG_SCROLL_CIRCULAR : LV_LABEL_LONG_DOT);
+}
 
 static lv_obj_t *card(lv_obj_t *parent, int x, int y, int w, int h) { return panel(parent, x, y, w, h, C_CARD, 24); }
 

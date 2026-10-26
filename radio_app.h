@@ -3,7 +3,7 @@
 // Stations: favourites saved on the hub (/favs.json, swipeable carousel on the radio page) plus a worldwide
 // search (radio-browser.info, no key) on its own screen.
 
-struct Station { char name[48]; char tag[48]; char url[256]; uint8_t kind; };   // kind: 0 live stream, 1 podcast episode
+struct Station { char name[48]; char tag[48]; char url[256]; char logo[160]; uint8_t kind; };   // kind: 0 live, 1 podcast episode
 
 // first boot only: seeds the favourites, after that they live in /favs.json on the hub's flash
 static const struct { const char *name, *tag, *url; } DEFAULT_FAVS[] = {
@@ -169,6 +169,7 @@ static void setStation(Station &s, const char *name, const char *tag, const char
   copyAscii(s.name, sizeof(s.name), name);
   copyAscii(s.tag, sizeof(s.tag), tag);
   strlcpy(s.url, url, sizeof(s.url));
+  s.logo[0] = 0;
   s.kind = 0;
 }
 static int favFind(const char *url) {
@@ -184,6 +185,7 @@ static void stationsSave(const char *path, const Station *list, int n) {
     JsonObject o = a.add<JsonObject>();
     o["n"] = list[i].name; o["t"] = list[i].tag; o["u"] = list[i].url;
     if (list[i].kind) o["k"] = list[i].kind;
+    if (list[i].logo[0]) o["l"] = list[i].logo;
   }
   serializeJson(d, f);
   f.close();
@@ -197,6 +199,7 @@ static int stationsLoad(const char *path, Station *list, int max) {
     for (JsonObject o : d.as<JsonArray>()) {
       if (n >= max) break;
       setStation(list[n], o["n"] | "", o["t"] | "", o["u"] | "");
+      strlcpy(list[n].logo, o["l"] | "", sizeof(list[0].logo));
       list[n++].kind = o["k"] | 0;
     }
   f.close();
@@ -233,9 +236,15 @@ static void favsLoad() {
 // ───────────── radio page ─────────────
 static lv_obj_t *lblStation, *lblTitle, *lblStatus, *lblPlay, *sldVol, *lblSleep, *lblFav, *carousel;
 static lv_obj_t *lblPrev, *lblNext, *sldSeek, *lblTime;     // episodes: -30 / +30 s and a time bar
+static lv_obj_t *npCard, *npArt;                              // now-playing card and its logo
 static void carouselRebuild();
 static void carouselHighlight();
 static void transportUpdate();
+static void npArtUpdate() {                                   // swap the now-playing logo (not part of any card event)
+  if (!npCard) return;
+  if (npArt) lv_obj_delete(npArt);
+  npArt = artImage(npCard, 24, 16, curSt.logo);
+}
 static void favBtnUpdate() {
   if (lblFav) lv_label_set_text(lblFav, curStation >= 0 ? LV_SYMBOL_OK "  Favourite" : LV_SYMBOL_PLUS "  Favourite");
 }
@@ -251,6 +260,7 @@ static void playStationData(const Station &s, int favIdx) {
   lv_label_set_text(lblTitle, curSt.tag);
   favBtnUpdate();
   transportUpdate();
+  npArtUpdate();
   recentPush(curSt);
   lv_async_call([](void *) { carouselRebuild(); }, nullptr); // after the current event: we may be inside a card's click
   if (xSemaphoreTake(metaMx, portMAX_DELAY) == pdTRUE) { metaTitle[0] = 0; metaDirty = true; xSemaphoreGive(metaMx); }
@@ -416,15 +426,15 @@ static void onCarouselCard(lv_event_t *e) {
 static lv_obj_t *stationCard(const Station &st, int key) {
   lv_obj_t *b = carouselCard(210, C_CARD);
   lv_obj_set_user_data(b, (void *)(intptr_t)key);
-  lv_obj_t *n = mkLabel(b, st.name, F_M, C_TEXT);
-  lv_obj_set_width(n, 178);
+  lv_obj_t *n = mkLabel(b, st.name, F_S, C_TEXT);
+  lv_obj_set_width(n, 106);
   lv_label_set_long_mode(n, LV_LABEL_LONG_WRAP);
-  lv_obj_set_style_max_height(n, 56, 0);
-  lv_obj_align(n, LV_ALIGN_TOP_LEFT, 0, 0);
+  lv_obj_set_style_max_height(n, 64, 0);
+  lv_obj_align(n, LV_ALIGN_TOP_LEFT, 72, 0);
   lv_obj_t *t = mkLabel(b, st.tag, F_XS, C_MUTED);
-  lv_obj_set_width(t, 178);
-  lv_label_set_long_mode(t, LV_LABEL_LONG_DOT);
+  oneLine(t, 178, false);
   lv_obj_align(t, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+  artImage(b, 0, 0, st.logo);
   lv_obj_add_event_cb(b, onCarouselCard, LV_EVENT_CLICKED, nullptr);
   return b;
 }
@@ -475,19 +485,19 @@ static void radioBuild(lv_obj_t *pg) {
   lv_obj_set_scrollbar_mode(carousel, LV_SCROLLBAR_MODE_OFF);
 
   lv_obj_t *c = card(pg, 12, 166, 688, 246);
+  npCard = c;
+  npArt = artImage(c, 24, 16, curSt.logo);
   lv_obj_t *cap = mkLabel(c, "NOW PLAYING", F_XS, C_ACCENT);
   lv_obj_set_style_text_letter_space(cap, 3, 0);
-  lv_obj_set_pos(cap, 24, 14);
+  lv_obj_set_pos(cap, 100, 14);
 
   lblStation = mkLabel(c, curSt.name, F_L, C_TEXT);
-  lv_obj_set_width(lblStation, 300);
-  lv_label_set_long_mode(lblStation, LV_LABEL_LONG_DOT);
-  lv_obj_set_pos(lblStation, 24, 34);
+  oneLine(lblStation, 224, true);
+  lv_obj_set_pos(lblStation, 100, 34);
 
   lblTitle = mkLabel(c, curSt.tag, F_M, C_MUTED);
-  lv_obj_set_width(lblTitle, 640);
-  lv_label_set_long_mode(lblTitle, LV_LABEL_LONG_SCROLL_CIRCULAR);
-  lv_obj_set_pos(lblTitle, 24, 74);
+  oneLine(lblTitle, 564, true);
+  lv_obj_set_pos(lblTitle, 100, 74);
 
   lblStatus = mkLabel(c, "", F_S, C_MUTED);
   lv_obj_set_pos(lblStatus, 24, 106);
@@ -583,7 +593,7 @@ static int rbFetch(const char *endpoint, int n) {          // appends stations t
   if (rbGet(endpoint, rbQuery, "?limit=60&hidebroken=true&order=clickcount&reverse=true", body) != 200) return n ? n : -1;
   JsonDocument filter;
   JsonObject fo = filter.add<JsonObject>();
-  fo["name"] = true; fo["url_resolved"] = true; fo["countrycode"] = true; fo["tags"] = true; fo["codec"] = true; fo["bitrate"] = true;
+  fo["name"] = true; fo["url_resolved"] = true; fo["countrycode"] = true; fo["tags"] = true; fo["codec"] = true; fo["bitrate"] = true; fo["favicon"] = true;
   JsonDocument doc;
   if (deserializeJson(doc, body, DeserializationOption::Filter(filter))) return n ? n : -1;
   for (JsonObject r : doc.as<JsonArray>()) {
@@ -601,6 +611,8 @@ static int rbFetch(const char *endpoint, int n) {          // appends stations t
     String name = String((const char *)(r["name"] | ""));
     name.trim();
     setStation(h.s, name.c_str(), tags.length() ? tags.c_str() : (const char *)(r["countrycode"] | ""), u);
+    const char *logo = r["favicon"] | "";
+    if (strlen(logo) < sizeof(h.s.logo)) strlcpy(h.s.logo, logo, sizeof(h.s.logo));
     char det[96];
     int kbps = r["bitrate"] | 0;
     if (kbps) snprintf(det, sizeof(det), "%s  %s %d  %s", (const char *)(r["countrycode"] | ""), codec, kbps, tags.c_str());
@@ -609,6 +621,49 @@ static int rbFetch(const char *endpoint, int n) {          // appends stations t
   }
   return n;
 }
+static uint32_t logoTried[64];
+static int nLogoTried = 0;
+static volatile bool logosChanged = false;                    // UI rebuilds the carousel + now-playing logo
+static bool logoWanted(const Station &s) {
+  if (s.logo[0] || !s.url[0] || s.kind != 0 || nLogoTried >= 64) return false;
+  uint32_t h = artHash(s.url);
+  for (int i = 0; i < nLogoTried; i++) if (logoTried[i] == h) return false;
+  return true;
+}
+static void radioLogoTick() {                                 // netTask: one lookup per call
+  const Station *c = nullptr;
+  if (logoWanted(curSt)) c = &curSt;
+  for (int i = 0; !c && i < nFavs; i++) if (logoWanted(favs[i])) c = &favs[i];
+  for (int i = 0; !c && i < nRecent; i++) if (logoWanted(recents[i])) c = &recents[i];
+  if (!c) return;
+  char url[256], name[48];
+  strlcpy(url, c->url, sizeof(url)); strlcpy(name, c->name, sizeof(name));
+  logoTried[nLogoTried++] = artHash(url);
+  char logo[160] = "";
+  JsonDocument filter;
+  filter[0]["favicon"] = true;
+  for (int pass = 0; pass < 2 && !logo[0]; pass++) {          // by stream URL, then by station name
+    String body;
+    int code = pass == 0 ? rbGet("stations/byurl?url=", url, "", body)
+                         : rbGet("stations/byname/", name, "?limit=5&hidebroken=true&order=clickcount&reverse=true", body);
+    if (code != 200) continue;
+    JsonDocument doc;
+    if (deserializeJson(doc, body, DeserializationOption::Filter(filter))) continue;
+    for (JsonObject r : doc.as<JsonArray>()) {
+      const char *f = r["favicon"] | "";
+      if (f[0] && strlen(f) < sizeof(logo)) { strlcpy(logo, f, sizeof(logo)); break; }
+    }
+  }
+  if (!logo[0]) return;
+  if (!strcmp(curSt.url, url)) { strlcpy(curSt.logo, logo, sizeof(curSt.logo)); prefs.putBytes("cur", &curSt, sizeof(Station)); }
+  bool f = false, r = false;
+  for (int i = 0; i < nFavs; i++) if (!strcmp(favs[i].url, url)) { strlcpy(favs[i].logo, logo, sizeof(favs[0].logo)); f = true; }
+  for (int i = 0; i < nRecent; i++) if (!strcmp(recents[i].url, url)) { strlcpy(recents[i].logo, logo, sizeof(recents[0].logo)); r = true; }
+  if (f) favsSave();
+  if (r) stationsSave(RECENT_PATH, recents, nRecent);
+  logosChanged = true;
+}
+
 static void radioStationsFetch(uint8_t req) {               // netTask
   if (!rbHits) rbHits = (RbHit *)heap_caps_calloc(RB_MAX, sizeof(RbHit), MALLOC_CAP_SPIRAM);
   int n = -1;
@@ -810,6 +865,7 @@ static void radioTick(bool netUp) {
       lv_label_set_text_fmt(lblTime, d ? "%s / %s" : "%s", a, b);
     }
   }
+  if (logosChanged) { logosChanged = false; carouselRebuild(); npArtUpdate(); }
   static bool lastPlayIcon = true;
   bool playIcon = (playState == 1 || playState == 2);
   if (playIcon != lastPlayIcon) { lastPlayIcon = playIcon; lv_label_set_text(lblPlay, playIcon ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY); }
