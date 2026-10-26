@@ -97,6 +97,23 @@ static void detectSwap() {
   sprSwap = (probe[0] != 0xF800);
 }
 
+// PNG size from the IHDR chunk: 8-byte signature, then length + "IHDR", then big-endian width and height
+static bool pngDims(fs::FS &fsys, const char *path, int &w, int &h) {
+  File f = fsys.open(path, "r");
+  if (!f) return false;
+  uint8_t b[24];
+  bool ok = f.read(b, 24) == 24 && !memcmp(b + 12, "IHDR", 4);
+  f.close();
+  if (!ok) return false;
+  w = (b[16] << 24) | (b[17] << 16) | (b[18] << 8) | b[19];
+  h = (b[20] << 24) | (b[21] << 16) | (b[22] << 8) | b[23];
+  return true;
+}
+// "cover" scale: fill the whole screen, trimming whichever edges overhang
+static float coverScale(int w, int h) {
+  return (w > 0 && h > 0) ? std::max((float)SCREEN_W / w, (float)SCREEN_H / h) : 1.0f;
+}
+
 static bool decodeInto(uint16_t *dst, const PhotoRef &p) {
   fs::FS &fsys = (p.src == 1)
 #if ENABLE_SD
@@ -110,13 +127,16 @@ static bool decodeInto(uint16_t *dst, const PhotoRef &p) {
   photoSpr.fillScreen(TFT_BLACK);
   const char *dot = strrchr(p.path, '.');
   bool ok = false;
-  if (!strcasecmp(dot, ".bmp")) ok = photoSpr.drawBmpFile(fsys, p.path, SCREEN_W / 2, SCREEN_H / 2, 0, 0, 0, 0, 1.0f, 0.0f, lgfx::datum_t::middle_center);
-  else if (!strcasecmp(dot, ".png")) ok = photoSpr.drawPngFile(fsys, p.path, SCREEN_W / 2, SCREEN_H / 2, 0, 0, 0, 0, 1.0f, 0.0f, lgfx::datum_t::middle_center);
-  else {
-    int w = 0, h = 0;
-    float sc = 1.0f;
-    if (jpegDims(fsys, p.path, w, h) && w > 0 && h > 0) sc = std::min((float)SCREEN_W / w, (float)SCREEN_H / h);
-    ok = photoSpr.drawJpgFile(fsys, p.path, SCREEN_W / 2, SCREEN_H / 2, 0, 0, 0, 0, sc, sc, lgfx::datum_t::middle_center);
+  // x/y is the top-left of a SCREEN_W x SCREEN_H box; middle_center centres the scaled image in it and the box clips
+  // the overhang (passing the screen centre as x/y put the image's top-left there: only a quarter was visible)
+  int w = 0, h = 0;
+  if (!strcasecmp(dot, ".bmp")) ok = photoSpr.drawBmpFile(fsys, p.path, 0, 0, SCREEN_W, SCREEN_H, 0, 0, 1.0f, 0.0f, lgfx::datum_t::middle_center);
+  else if (!strcasecmp(dot, ".png")) {
+    float sc = pngDims(fsys, p.path, w, h) ? coverScale(w, h) : 1.0f;
+    ok = photoSpr.drawPngFile(fsys, p.path, 0, 0, SCREEN_W, SCREEN_H, 0, 0, sc, sc, lgfx::datum_t::middle_center);
+  } else {
+    float sc = jpegDims(fsys, p.path, w, h) ? coverScale(w, h) : 1.0f;
+    ok = photoSpr.drawJpgFile(fsys, p.path, 0, 0, SCREEN_W, SCREEN_H, 0, 0, sc, sc, lgfx::datum_t::middle_center);
   }
   if (ok && sprSwap) {
     uint32_t n = SCREEN_W * SCREEN_H;
