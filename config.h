@@ -7,7 +7,7 @@
 // ───────────── you & your house ─────────────
 #define HUB_NAME          "Ed's Kitchen"
 #define TZ_INFO           "GMT0BST,M3.5.0/1,M10.5.0"   // UK time with daylight saving
-#define WEATHER_LAT       51.5072f                      // <-- change to your town (this is London)
+#define WEATHER_LAT       51.5072f                      // default only: set your town on the hub (More > Weather)
 #define WEATHER_LON       -0.1276f
 #define WEATHER_PLACE     "London"
 #define USE_MPH           1                              // 1 = mph, 0 = km/h

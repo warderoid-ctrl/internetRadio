@@ -76,6 +76,7 @@ static uint32_t toastUntil = 0;
 // home page
 static lv_obj_t *homeClock, *homeDate, *homeWxIcon, *homeWxTemp, *homeWxCond, *homeWxHiLo, *homeNextT, *homeNextW, *homeStation, *homeStat, *homePlay;
 // more page
+static lv_obj_t *homeWxPlace, *moreLocLbl;
 static lv_obj_t *moreWifiLbl, *moreSys, *morePhotos, *moreUrl, *moreQr, *sldBright;
 
 static void showWifiScreen(bool allowBack);
@@ -445,8 +446,8 @@ static void homeBuild(lv_obj_t *pg) {
   lv_obj_set_pos(homeWxCond, 16, 108);
   homeWxHiLo = mkLabel(wc, "", F_S, C_MUTED);
   lv_obj_set_pos(homeWxHiLo, 16, 140);
-  lv_obj_t *wp = mkLabel(wc, WEATHER_PLACE, F_XS, C_MUTED);
-  lv_obj_set_pos(wp, 16, 170);
+  homeWxPlace = mkLabel(wc, wxPlace, F_XS, C_MUTED);
+  lv_obj_set_pos(homeWxPlace, 16, 170);
 
   lv_obj_t *nc = card(pg, 12, 212, 440, 92);
   lv_obj_add_event_cb(nc, onHomeNextTap, LV_EVENT_CLICKED, nullptr);
@@ -530,6 +531,105 @@ static void onRestart(lv_event_t *) { ESP.restart(); }
 
 static lv_obj_t *moreRow(lv_obj_t *col, int h) { return card(col, 0, 0, 688, h); }
 
+// ───────────── weather location screen: type a town, pick from the matches ─────────────
+static lv_obj_t *scrLoc, *locTa, *locKb, *locList, *locStatus;
+static void locShowKb(bool kb) {
+  if (kb) { lv_obj_remove_flag(locKb, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(locList, LV_OBJ_FLAG_HIDDEN); }
+  else { lv_obj_add_flag(locKb, LV_OBJ_FLAG_HIDDEN); lv_obj_remove_flag(locList, LV_OBJ_FLAG_HIDDEN); }
+}
+static void locSearch() {
+  const char *q = lv_textarea_get_text(locTa);
+  if (!q[0]) return;
+  if (netState != NET_UP) { lv_label_set_text(locStatus, "Connect to Wi-Fi first"); return; }
+  strlcpy(geoQuery, q, sizeof(geoQuery));
+  reqGeo = true;
+  lv_obj_clean(locList);
+  lv_label_set_text(locStatus, "Searching...");
+  locShowKb(false);
+}
+static void onLocPick(lv_event_t *e) {
+  const GeoHit &g = geoHits[(intptr_t)lv_event_get_user_data(e)];
+  weatherSaveLocation(g.lat, g.lon, g.name);
+  lv_label_set_text(homeWxPlace, wxPlace);
+  lv_label_set_text(wxLblPlace, wxPlace);
+  lv_label_set_text_fmt(moreLocLbl, LV_SYMBOL_GPS "  Weather: %s", wxPlace);
+  lv_screen_load(scrMainRef);
+  char m[64]; snprintf(m, sizeof(m), "Weather: %s", wxPlace);
+  uiToast(m, C_GOOD);
+}
+static void locTick(lv_timer_t *) {                      // show search results when netTask has them
+  static uint8_t seen = 0;
+  if (geoVer == seen) return;
+  seen = geoVer;
+  lv_obj_clean(locList);
+  if (geoN < 0) { lv_label_set_text(locStatus, "Search failed - check Wi-Fi and try again"); return; }
+  if (geoN == 0) { lv_label_set_text(locStatus, "No places found - try another spelling"); return; }
+  lv_label_set_text(locStatus, "Tap your town");
+  for (int i = 0; i < geoN; i++) {
+    lv_obj_t *row = lv_button_create(locList);
+    lv_obj_set_size(row, 736, 64);
+    lv_obj_set_style_bg_color(row, lv_color_hex(C_CARD2), 0);
+    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(row, lv_color_hex(C_CARD3), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(row, 18, 0);
+    lv_obj_set_style_shadow_width(row, 0, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_t *name = mkLabel(row, geoHits[i].name, F_M, C_TEXT);
+    lv_obj_align(name, LV_ALIGN_LEFT_MID, 12, 0);
+    lv_obj_t *det = mkLabel(row, geoHits[i].detail, F_S, C_MUTED);
+    lv_obj_set_width(det, 400);
+    lv_label_set_long_mode(det, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_align(det, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_align(det, LV_ALIGN_RIGHT_MID, -12, 0);
+    lv_obj_add_event_cb(row, onLocPick, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+  }
+}
+static void onLocBack(lv_event_t *) { lv_screen_load(scrMainRef); }
+static void onLocSearchBtn(lv_event_t *) { locSearch(); }
+static void onLocTa(lv_event_t *) { locShowKb(true); }
+static void onLocKb(lv_event_t *e) {
+  if (lv_event_get_code(e) == LV_EVENT_READY) locSearch();
+  else if (lv_event_get_code(e) == LV_EVENT_CANCEL) locShowKb(false);
+}
+static void locBuild() {
+  scrLoc = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(scrLoc, lv_color_hex(C_BG), 0);
+  lv_obj_remove_flag(scrLoc, LV_OBJ_FLAG_SCROLLABLE);
+  textBtn(scrLoc, 20, 14, 120, 56, LV_SYMBOL_LEFT " Back", F_M, C_CARD3, onLocBack);
+  lv_obj_t *title = mkLabel(scrLoc, LV_SYMBOL_GPS "  Weather location", F_L, C_TEXT);
+  lv_obj_set_pos(title, 160, 24);
+  locTa = lv_textarea_create(scrLoc);
+  lv_obj_set_pos(locTa, 20, 84);
+  lv_obj_set_size(locTa, 644, 64);
+  lv_textarea_set_one_line(locTa, true);
+  lv_textarea_set_placeholder_text(locTa, "Your town, e.g. Leeds");
+  lv_obj_set_style_text_font(locTa, F_M, 0);
+  lv_obj_set_style_bg_color(locTa, lv_color_hex(C_CARD2), 0);
+  lv_obj_set_style_text_color(locTa, lv_color_hex(C_TEXT), 0);
+  lv_obj_set_style_border_width(locTa, 0, 0);
+  lv_obj_set_style_radius(locTa, 18, 0);
+  lv_obj_add_event_cb(locTa, onLocTa, LV_EVENT_CLICKED, nullptr);
+  textBtn(scrLoc, 674, 84, 106, 64, "Search", F_M, C_ACCENT, onLocSearchBtn);
+  locStatus = mkLabel(scrLoc, "", F_S, C_MUTED);
+  lv_obj_set_pos(locStatus, 24, 158);
+  locList = scrollCol(scrLoc, 32, 190, 736, 280, 8);
+  locKb = lv_keyboard_create(scrLoc);
+  lv_obj_set_size(locKb, SCREEN_W, 270);
+  lv_obj_align(locKb, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_obj_set_style_text_font(locKb, F_M, 0);
+  lv_keyboard_set_textarea(locKb, locTa);
+  lv_obj_add_event_cb(locKb, onLocKb, LV_EVENT_ALL, nullptr);
+  lv_timer_create(locTick, 200, nullptr);
+}
+static void onLocBtn(lv_event_t *) {
+  if (!scrLoc) locBuild();
+  lv_textarea_set_text(locTa, "");
+  lv_obj_clean(locList);
+  lv_label_set_text_fmt(locStatus, "Now: %s", wxPlace);
+  locShowKb(true);
+  lv_screen_load(scrLoc);
+}
+
 static void moreBuild(lv_obj_t *pg) {
   lv_obj_t *col = scrollCol(pg, 12, 4, 688, 408, 10);
   lv_obj_t *r = moreRow(col, 84);
@@ -567,6 +667,14 @@ static void moreBuild(lv_obj_t *pg) {
   moreWifiLbl = mkLabel(r, LV_SYMBOL_WIFI "  Wi-Fi", F_M, C_TEXT);
   lv_obj_set_pos(moreWifiLbl, 20, 26);
   textBtn(r, 500, 14, 170, 56, "Change", F_M, C_CARD3, onWifiBtn);
+
+  r = moreRow(col, 84);
+  moreLocLbl = mkLabel(r, "", F_M, C_TEXT);
+  lv_obj_set_width(moreLocLbl, 460);
+  lv_label_set_long_mode(moreLocLbl, LV_LABEL_LONG_DOT);
+  lv_obj_set_pos(moreLocLbl, 20, 26);
+  lv_label_set_text_fmt(moreLocLbl, LV_SYMBOL_GPS "  Weather: %s", wxPlace);
+  textBtn(r, 500, 14, 170, 56, "Change", F_M, C_CARD3, onLocBtn);
 
   r = moreRow(col, 84);
   morePhotos = mkLabel(r, LV_SYMBOL_IMAGE "  Photo frame", F_M, C_TEXT);
@@ -608,6 +716,7 @@ static void netTask(void *) {
       if (reqWeather || !lastWx || now - lastWx > 20UL * 60000UL) { reqWeather = false; lastWx = now; if (!weatherFetch()) lastWx = now - 19UL * 60000UL; }
       if (reqAgenda || !lastAg || now - lastAg > 15UL * 60000UL) { reqAgenda = false; lastAg = now; if (!agendaFetch() && agendaConfigured) lastAg = now - 14UL * 60000UL; }
       if (HA_ENABLED && (reqHa || now - lastHa > (curPage == PG_HOUSE ? 4000UL : 30000UL))) { reqHa = false; lastHa = now; haPoll(); }
+      if (reqGeo) { reqGeo = false; geoFetch(); }
       HaCall c;
       while (haQ && xQueueReceive(haQ, &c, 0) == pdTRUE) haCallNow(c);
     }
@@ -714,6 +823,7 @@ void setup() {
   volume     = constrain(prefs.getUChar("vol", 10), 0, 21);
   brightPct  = constrain(prefs.getUChar("bri", 100), 10, 100);
   remoteTokenInit();
+  weatherLoadLocation();
   i2cMx = xSemaphoreCreateMutex();
   dataMx = xSemaphoreCreateMutex();
   uiQ = xQueueCreate(10, sizeof(UiMsg));

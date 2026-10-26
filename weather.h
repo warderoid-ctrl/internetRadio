@@ -15,6 +15,57 @@ struct WxData {
 static WxData wx;
 static volatile bool reqWeather = true;
 
+// ───────────── location: set on the hub (More > Weather location), kept in NVS; config.h only has the default ─────────────
+static float wxLat = WEATHER_LAT, wxLon = WEATHER_LON;
+static char wxPlace[40] = WEATHER_PLACE;
+static void weatherLoadLocation() {                    // after prefs.begin()
+  if (!prefs.isKey("wxlat")) return;
+  wxLat = prefs.getFloat("wxlat", WEATHER_LAT);
+  wxLon = prefs.getFloat("wxlon", WEATHER_LON);
+  prefs.getString("wxplace", wxPlace, sizeof(wxPlace));
+}
+static void weatherSaveLocation(float lat, float lon, const char *place) {
+  wxLat = lat; wxLon = lon; strlcpy(wxPlace, place, sizeof(wxPlace));
+  prefs.putFloat("wxlat", lat); prefs.putFloat("wxlon", lon); prefs.putString("wxplace", wxPlace);
+  reqWeather = true;
+}
+
+// place search (Open-Meteo geocoding, no key). The UI sets geoQuery + reqGeo; netTask fills geoHits, bumps geoVer.
+struct GeoHit { char name[40]; char detail[64]; float lat, lon; };
+#define GEO_MAX 6
+static GeoHit geoHits[GEO_MAX];
+static volatile int geoN = 0;                          // -1 = search failed
+static volatile uint8_t geoVer = 0;
+static char geoQuery[48];
+static volatile bool reqGeo = false;
+static void geoFetch() {
+  String url = "https://geocoding-api.open-meteo.com/v1/search?count=" + String(GEO_MAX) + "&language=en&format=json&name=";
+  for (const char *c = geoQuery; *c; c++) {           // URL-encode the typed name
+    if (isalnum((unsigned char)*c) || *c == '-' || *c == '.') url += *c;
+    else { char h[4]; snprintf(h, sizeof(h), "%%%02X", (unsigned char)*c); url += h; }
+  }
+  String body;
+  int n = -1;
+  if (httpGet(url.c_str(), body) == 200) {
+    JsonDocument doc;
+    if (!deserializeJson(doc, body)) {
+      n = 0;
+      for (JsonObject r : doc["results"].as<JsonArray>()) {
+        if (n >= GEO_MAX) break;
+        GeoHit &g = geoHits[n++];
+        copyAscii(g.name, sizeof(g.name), r["name"] | "");
+        String d = String((const char *)(r["admin1"] | ""));
+        const char *country = r["country"] | "";
+        if (country[0]) d += d.length() ? String(", ") + country : String(country);
+        copyAscii(g.detail, sizeof(g.detail), d.c_str());
+        g.lat = r["latitude"] | 0.0f; g.lon = r["longitude"] | 0.0f;
+      }
+    }
+  }
+  geoN = n;
+  geoVer++;
+}
+
 static uint8_t wxKindOf(int c) {
   if (c == 0 || c == 1) return WX_CLEAR;
   if (c == 2) return WX_PARTLY;
@@ -49,7 +100,7 @@ static bool weatherFetch() {
     "&hourly=temperature_2m,weather_code,precipitation_probability&forecast_hours=16"
     "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset,uv_index_max"
     "&forecast_days=7&timezone=auto&wind_speed_unit=%s&temperature_unit=%s",
-    WEATHER_LAT, WEATHER_LON, USE_MPH ? "mph" : "kmh", USE_CELSIUS ? "celsius" : "fahrenheit");
+    wxLat, wxLon, USE_MPH ? "mph" : "kmh", USE_CELSIUS ? "celsius" : "fahrenheit");
   String body;
   int code = httpGet(url, body);
   if (code != 200) { Serial.printf("weather HTTP %d\n", code); return false; }
@@ -102,7 +153,7 @@ static void wxSentence(char *out, size_t n) {
   DATA_LOCK(); WxData w = wx; DATA_UNLOCK();
   if (!w.valid) { snprintf(out, n, "I haven't got the weather yet."); return; }
   snprintf(out, n, "It's %d degrees and %s in %s. Today's high is %d, low %d, with a %d percent chance of rain.",
-           w.temp, wxText(w.code), WEATHER_PLACE, w.days[0].hi, w.days[0].lo, w.popToday);
+           w.temp, wxText(w.code), wxPlace, w.days[0].hi, w.days[0].lo, w.popToday);
 }
 
 // ───────────── weather page ─────────────
@@ -127,7 +178,7 @@ static void weatherBuild(lv_obj_t *pg) {
   lv_obj_set_width(wxLblCond, 350);
   lv_label_set_long_mode(wxLblCond, LV_LABEL_LONG_DOT);
   lv_obj_set_pos(wxLblCond, 156, 108);
-  wxLblPlace = mkLabel(top, WEATHER_PLACE, F_S, C_MUTED);
+  wxLblPlace = mkLabel(top, wxPlace, F_S, C_MUTED);
   lv_obj_set_pos(wxLblPlace, 156, 146);
   wxLblAge = mkLabel(top, "", F_XS, C_MUTED);
   lv_obj_set_pos(wxLblAge, 24, 150);
