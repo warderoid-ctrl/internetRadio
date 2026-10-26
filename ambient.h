@@ -31,6 +31,17 @@ static bool sprSwap = false;
 struct PhotoRef { char path[56]; uint8_t src; };               // src 0 = LittleFS, 1 = SD
 static PhotoRef *photos = nullptr;
 static int nPhotos = 0, photoIdx = -1;
+static uint8_t photoOrder[MAX_PHOTOS];                          // shuffled play order, reshuffled each round
+static int orderPos = 0, orderN = 0;
+static int nextShuffled() {
+  if (orderPos >= orderN || orderN != nPhotos) {
+    orderN = nPhotos; orderPos = 0;
+    for (int i = 0; i < orderN; i++) photoOrder[i] = i;
+    for (int i = orderN - 1; i > 0; i--) { int j = esp_random() % (i + 1); uint8_t t = photoOrder[i]; photoOrder[i] = photoOrder[j]; photoOrder[j] = t; }
+    if (orderN > 1 && photoOrder[0] == photoIdx) { uint8_t t = photoOrder[0]; photoOrder[0] = photoOrder[1]; photoOrder[1] = t; }  // no repeat across rounds
+  }
+  return photoOrder[orderPos++];
+}
 static bool ambWantPhotos(bool night) { return nPhotos > 0 && (ambMode == 1 || (ambMode == 0 && !night)); }
 static bool sdOk = false;
 static bool lfsOk = false;
@@ -251,7 +262,7 @@ static void startPan(lv_obj_t *img, int w, int h) {
 static bool nextPhoto() {
   if (nPhotos == 0 || !bufA || !bufB) return false;
   for (int tries = 0; tries < nPhotos && tries < 4; tries++) {
-    photoIdx = (photoIdx + 1) % nPhotos;
+    photoIdx = nextShuffled();
     uint16_t *dst = frontIsA ? bufB : bufA;                    // decode into the hidden buffer
     int w, h;
     if (!decodeInto(dst, photos[photoIdx], w, h)) continue;

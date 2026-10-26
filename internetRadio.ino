@@ -1457,6 +1457,8 @@ static void serialTick() {
       Serial.printf("playing %s\n", s.url);
     } else if (!strncmp(line, "seek ", 5)) {                         // "seek <+/- seconds>"
       audioCmd(AC_SEEK, atoi(line + 5));
+    } else if (!strcmp(line, "mic")) {                               // same as tapping the mic button
+      voiceReq = true;
     } else if (!strcmp(line, "pos")) {
       Serial.printf("pos %u / %u s, state %u\n", (unsigned)posSec, (unsigned)durSec, (unsigned)playState);
     }

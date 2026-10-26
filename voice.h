@@ -34,21 +34,28 @@ static uint8_t *recordUtterance(size_t *wavLen) {
   if (!wav) return nullptr;
   int16_t *pcm = (int16_t *)(wav + 44);
   micI2S.setPinsPdmRx(19, 20);
-  if (!micI2S.begin(I2S_MODE_PDM_RX, MIC_RATE, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO)) { free(wav); return nullptr; }
+  if (!micI2S.begin(I2S_MODE_PDM_RX, MIC_RATE, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO)) { Serial.println("mic: I2S PDM begin failed"); free(wav); return nullptr; }
   const int CH = 320;                                         // 20 ms
   size_t n = 0; int chunk = 0, loud = 0, quiet = 0; bool started = false;
-  float noise = 0; int thr = 400;
-  while (n + CH <= maxSamples) {
+  float noise = 0; int thr = 400, peak = 0, rawPeak = 0;
+  float dcX = 0, dcY = 0;                                     // DC blocker state: the PDM mic sits at a big constant offset,
+  while (n + CH <= maxSamples) {                              // which (x8 gain) clipped every sample and hid speech
     size_t got = micI2S.readBytes((char *)(pcm + n), CH * 2) / 2;
     if (got < (size_t)CH) break;
     int64_t sum = 0;
     for (int i = 0; i < CH; i++) {
-      int32_t v = (int32_t)pcm[n + i] * MIC_GAIN;
+      float x = pcm[n + i];
+      float y = x - dcX + 0.995f * dcY;                         // y[n] = x[n] - x[n-1] + 0.995 y[n-1]
+      dcX = x; dcY = y;
+      int32_t v = (int32_t)(y * MIC_GAIN);
+      int a = pcm[n + i] < 0 ? -pcm[n + i] : pcm[n + i];
+      if (a > rawPeak) rawPeak = a;
       if (v > 32767) v = 32767; if (v < -32768) v = -32768;
       pcm[n + i] = (int16_t)v;
       sum += v < 0 ? -v : v;
     }
     int level = (int)(sum / CH);
+    if (level > peak) peak = level;
     chunk++;
     if (chunk <= 10) { n += 0; continue; }                    // let the mic settle (first 200 ms discarded)
     if (chunk <= 25) { noise += level; if (chunk == 25) thr = (int)(noise / 15 * 2.2f) + 250; n += CH; continue; }
@@ -59,6 +66,8 @@ static uint8_t *recordUtterance(size_t *wavLen) {
     if (!started && n > (size_t)MIC_RATE * 6) break;           // nobody spoke
   }
   micI2S.end();
+  Serial.printf("mic: %u ms, noise thr %d, loudest 20ms avg %d, raw peak %d, speech %s\n",
+                (unsigned)(n * 1000 / MIC_RATE), thr, peak, rawPeak, started ? "yes" : "no");
 #if AUDIO_OUT_EXTERNAL
   // the amp's DIN shares the mic clock pin: hand the pin back to the speaker I2S (I2S1 data out)
   gpio_set_direction((gpio_num_t)DAC_DOUT, GPIO_MODE_OUTPUT);
