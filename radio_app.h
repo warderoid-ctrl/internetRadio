@@ -31,7 +31,7 @@ static volatile bool reqNowPlaying = false; // station changed: fetch now-playin
 
 Audio audio(I2S_NUM_1);       // speaker on I2S1: leaves I2S0 free for the PDM microphone (PDM RX only works on I2S0)
 
-enum AudioCmdType : uint8_t { AC_STATION, AC_URL, AC_SPEECH, AC_FILE, AC_STOP, AC_VOLUME };
+enum AudioCmdType : uint8_t { AC_STATION, AC_URL, AC_SPEECH, AC_FILE, AC_STOP, AC_VOLUME, AC_SEEK };
 struct AudioCmd { AudioCmdType type; int arg; char str[256]; };
 static QueueHandle_t cmdQ;
 static SemaphoreHandle_t metaMx;
@@ -42,6 +42,7 @@ static volatile uint8_t audioMode = 0;     // 0 = radio, 1 = overlay (speech / c
 static volatile int resumeStation = -1;    // >= 0: bring the radio back when an overlay finishes
 static volatile bool wantPlaying = false;  // user intent, drives auto-reconnect
 static volatile uint8_t playKind = 0;      // Station::kind of what the audio task plays (episodes end, streams reconnect)
+static volatile uint32_t posSec = 0, durSec = 0;  // episode position / length (audio task keeps them current)
 static int volume = 10;                    // 0..21
 static uint32_t sleepAt = 0;               // millis() when the sleep timer fires (0 = off)
 
@@ -86,6 +87,7 @@ static void audioTask(void *) {
         case AC_STATION:
           strlcpy(radioUrl, c.str, sizeof(radioUrl));
           playKind = (uint8_t)c.arg;
+          posSec = durSec = 0;
           audio.stopSong(); audioMode = 0; wantPlaying = true; playState = 1; connT = millis();
           if (!audio.connecttohost(radioUrl)) playState = 3;
           break;
@@ -103,6 +105,9 @@ static void audioTask(void *) {
           audio.stopSong(); wantPlaying = false; playState = 0; audioMode = 0; break;
         case AC_VOLUME:
           audio.setVolume(c.arg); break;
+        case AC_SEEK:                                        // episodes only: relative seconds (range request)
+          if (playKind == 1 && audioMode == 0) audio.setTimeOffset(c.arg);
+          break;
       }
     }
     if (audioMode == 2) {                                    // overlay done
@@ -123,6 +128,8 @@ static void audioTask(void *) {
       }
     }
     audio.loop();
+    static uint32_t posT = 0;
+    if (playKind == 1 && millis() - posT > 500) { posT = millis(); posSec = audio.getAudioCurrentTime(); durSec = audio.getAudioFileDuration(); }
     vTaskDelay(1);
   }
 }
@@ -225,8 +232,10 @@ static void favsLoad() {
 
 // ───────────── radio page ─────────────
 static lv_obj_t *lblStation, *lblTitle, *lblStatus, *lblPlay, *sldVol, *lblSleep, *lblFav, *carousel;
+static lv_obj_t *lblPrev, *lblNext, *sldSeek, *lblTime;     // episodes: -30 / +30 s and a time bar
 static void carouselRebuild();
 static void carouselHighlight();
+static void transportUpdate();
 static void favBtnUpdate() {
   if (lblFav) lv_label_set_text(lblFav, curStation >= 0 ? LV_SYMBOL_OK "  Favourite" : LV_SYMBOL_PLUS "  Favourite");
 }
@@ -241,6 +250,7 @@ static void playStationData(const Station &s, int favIdx) {
   lv_label_set_text(lblStation, curSt.name);
   lv_label_set_text(lblTitle, curSt.tag);
   favBtnUpdate();
+  transportUpdate();
   recentPush(curSt);
   lv_async_call([](void *) { carouselRebuild(); }, nullptr); // after the current event: we may be inside a card's click
   if (xSemaphoreTake(metaMx, portMAX_DELAY) == pdTRUE) { metaTitle[0] = 0; metaDirty = true; xSemaphoreGive(metaMx); }
@@ -328,8 +338,24 @@ static void setVolume(int v) {
 static void onFindStations(lv_event_t *);                     // opens the search screen (in the .ino)
 static void onRenameBtn(lv_event_t *);                        // rename dialog (in the .ino)
 static void onFavBtn(lv_event_t *) { favToggle(curSt); }
-static void onNext(lv_event_t *) { playStation(curStation + 1); }
-static void onPrev(lv_event_t *) { playStation(curStation - 1); }
+static void onNext(lv_event_t *) { if (curSt.kind == 1) audioCmd(AC_SEEK, 30); else playStation(curStation + 1); }
+static void onPrev(lv_event_t *) { if (curSt.kind == 1) audioCmd(AC_SEEK, -30); else playStation(curStation - 1); }
+static void onSeek(lv_event_t *) { if (curSt.kind == 1) audioCmd(AC_SEEK, (int)lv_slider_get_value(sldSeek) - (int)posSec); }
+static void fmtTime(char *b, size_t n, uint32_t s) {
+  if (s >= 3600) snprintf(b, n, "%u:%02u:%02u", (unsigned)(s / 3600), (unsigned)(s / 60 % 60), (unsigned)(s % 60));
+  else snprintf(b, n, "%u:%02u", (unsigned)(s / 60), (unsigned)(s % 60));
+}
+// live radio: prev / next station; podcast episode: -30 s / +30 s and a draggable time bar
+static void transportUpdate() {
+  if (!lblPrev) return;
+  bool ep = (curSt.kind == 1);
+  lv_label_set_text(lblPrev, ep ? "-30" : LV_SYMBOL_PREV);
+  lv_label_set_text(lblNext, ep ? "+30" : LV_SYMBOL_NEXT);
+  lv_obj_set_style_text_font(lblPrev, ep ? F_M : F_L, 0);
+  lv_obj_set_style_text_font(lblNext, ep ? F_M : F_L, 0);
+  if (ep) { lv_obj_remove_flag(sldSeek, LV_OBJ_FLAG_HIDDEN); lv_obj_remove_flag(lblTime, LV_OBJ_FLAG_HIDDEN); }
+  else { lv_obj_add_flag(sldSeek, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(lblTime, LV_OBJ_FLAG_HIDDEN); }
+}
 static void onPlayPause(lv_event_t *) {
   if (playState == 0 || playState == 3 || playState == 4) playCurrent(); else radioStop();
 }
@@ -342,8 +368,8 @@ static void onSleep(lv_event_t *) {
   static const int mins[] = {0, 15, 30, 60};
   static int idx = 0;
   idx = (idx + 1) % 4;
-  if (mins[idx]) { sleepAt = millis() + (uint32_t)mins[idx] * 60000UL; lv_label_set_text_fmt(lblSleep, LV_SYMBOL_BELL "  Sleep %d min", mins[idx]); }
-  else { sleepAt = 0; lv_label_set_text(lblSleep, LV_SYMBOL_BELL "  Sleep: off"); }
+  if (mins[idx]) { sleepAt = millis() + (uint32_t)mins[idx] * 60000UL; lv_label_set_text_fmt(lblSleep, "%dm", mins[idx]); }
+  else { sleepAt = 0; lv_label_set_text(lblSleep, LV_SYMBOL_BELL); }
 }
 
 static lv_obj_t *carouselCard(int w, uint32_t bg) {
@@ -454,24 +480,26 @@ static void radioBuild(lv_obj_t *pg) {
   lv_obj_set_pos(cap, 24, 14);
 
   lblStation = mkLabel(c, curSt.name, F_L, C_TEXT);
-  lv_obj_set_width(lblStation, 380);
+  lv_obj_set_width(lblStation, 300);
   lv_label_set_long_mode(lblStation, LV_LABEL_LONG_DOT);
   lv_obj_set_pos(lblStation, 24, 34);
 
   lblTitle = mkLabel(c, curSt.tag, F_M, C_MUTED);
-  lv_obj_set_width(lblTitle, 430);
+  lv_obj_set_width(lblTitle, 640);
   lv_label_set_long_mode(lblTitle, LV_LABEL_LONG_SCROLL_CIRCULAR);
   lv_obj_set_pos(lblTitle, 24, 74);
 
   lblStatus = mkLabel(c, "", F_S, C_MUTED);
   lv_obj_set_pos(lblStatus, 24, 106);
 
+  lv_obj_t *sb = textBtn(c, 334, 18, 60, 52, LV_SYMBOL_BELL, F_S, C_CARD3, onSleep);   // sleep timer: tap to cycle
+  lblSleep = btnLabel(sb);
   textBtn(c, 404, 18, 60, 52, LV_SYMBOL_EDIT, F_M, C_CARD3, onRenameBtn);
   lv_obj_t *fb = textBtn(c, 474, 18, 190, 52, "", F_S, C_CARD3, onFavBtn);
   lblFav = btnLabel(fb);
   favBtnUpdate();
 
-  textBtn(c, 24, 150, 76, 76, LV_SYMBOL_PREV, F_L, C_CARD3, onPrev);
+  lblPrev = btnLabel(textBtn(c, 24, 150, 76, 76, LV_SYMBOL_PREV, F_L, C_CARD3, onPrev));
   lv_obj_t *play = textBtn(c, 116, 138, 100, 100, LV_SYMBOL_PLAY, F_XL, C_ACCENT, onPlayPause);
   lblPlay = btnLabel(play);
   lv_obj_set_style_bg_grad_color(play, lv_color_hex(C_ACCENT2), 0);
@@ -479,10 +507,20 @@ static void radioBuild(lv_obj_t *pg) {
   lv_obj_set_style_shadow_width(play, 40, 0);
   lv_obj_set_style_shadow_color(play, lv_color_hex(C_ACCENT), 0);
   lv_obj_set_style_shadow_opa(play, LV_OPA_40, 0);
-  textBtn(c, 232, 150, 76, 76, LV_SYMBOL_NEXT, F_L, C_CARD3, onNext);
+  lblNext = btnLabel(textBtn(c, 232, 150, 76, 76, LV_SYMBOL_NEXT, F_L, C_CARD3, onNext));
 
-  lv_obj_t *sb = textBtn(c, 340, 140, 190, 46, LV_SYMBOL_BELL "  Sleep: off", F_S, C_CARD2, onSleep);
-  lblSleep = btnLabel(sb);
+  lblTime = mkLabel(c, "", F_XS, C_MUTED);
+  lv_obj_set_pos(lblTime, 340, 136);
+  sldSeek = lv_slider_create(c);
+  lv_slider_set_range(sldSeek, 0, 1);
+  lv_obj_set_size(sldSeek, 324, 14);
+  lv_obj_set_pos(sldSeek, 340, 166);
+  lv_obj_set_style_bg_color(sldSeek, lv_color_hex(C_CARD3), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(sldSeek, lv_color_hex(C_ACCENT2), LV_PART_INDICATOR);
+  lv_obj_set_style_bg_color(sldSeek, lv_color_hex(C_TEXT), LV_PART_KNOB);
+  lv_obj_set_style_pad_all(sldSeek, 10, LV_PART_KNOB);
+  lv_obj_add_event_cb(sldSeek, onSeek, LV_EVENT_RELEASED, nullptr);
+  transportUpdate();
 
   lv_obj_t *vlo = mkLabel(c, LV_SYMBOL_VOLUME_MID, F_M, C_MUTED);
   lv_obj_set_pos(vlo, 340, 202);
@@ -761,6 +799,17 @@ static void radioTick(bool netUp) {
     lv_label_set_text(lblStatus, st);
     lv_obj_set_style_text_color(lblStatus, lv_color_hex(sc), 0);
   }
+  if (curSt.kind == 1 && sldSeek && !lv_obj_has_state(sldSeek, LV_STATE_PRESSED)) {
+    static uint32_t lastPos = 1, lastDur = 1;
+    uint32_t p = posSec, d = durSec;
+    if (p != lastPos || d != lastDur) {
+      lastPos = p; lastDur = d;
+      lv_slider_set_range(sldSeek, 0, d ? (int32_t)d : 1);
+      lv_slider_set_value(sldSeek, (int32_t)std::min(p, d ? d : 1), LV_ANIM_OFF);
+      char a[12], b[12]; fmtTime(a, sizeof(a), p); fmtTime(b, sizeof(b), d);
+      lv_label_set_text_fmt(lblTime, d ? "%s / %s" : "%s", a, b);
+    }
+  }
   static bool lastPlayIcon = true;
   bool playIcon = (playState == 1 || playState == 2);
   if (playIcon != lastPlayIcon) { lastPlayIcon = playIcon; lv_label_set_text(lblPlay, playIcon ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY); }
@@ -768,7 +817,7 @@ static void radioTick(bool netUp) {
   if (sleepAt && (int32_t)(millis() - sleepAt) >= 0) {
     sleepAt = 0;
     radioStop();
-    lv_label_set_text(lblSleep, LV_SYMBOL_BELL "  Sleep: off");
+    lv_label_set_text(lblSleep, LV_SYMBOL_BELL);
     postUi(UM_TOAST, "Sleep timer - radio off. Night night!", C_ACCENT);
   }
 }

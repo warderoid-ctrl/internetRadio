@@ -1422,10 +1422,17 @@ static void serialTick() {
     char c = Serial.read();
     if (c != '\n' && c != '\r') { if (n < sizeof(line) - 1) line[n++] = c; continue; }
     line[n] = 0; n = 0;
-    if (!strncmp(line, "play ", 5)) {
-      Station s; setStation(s, "Test stream", line + 5, line + 5);
+    if (!strncmp(line, "play ", 5) || !strncmp(line, "ep ", 3)) {    // "ep <url>": play as a podcast episode
+      bool ep = line[0] == 'e';
+      const char *u = line + (ep ? 3 : 5);
+      Station s; setStation(s, "Test stream", u, u);
+      s.kind = ep ? 1 : 0;
       playStationData(s, favFind(s.url));
       Serial.printf("playing %s\n", s.url);
+    } else if (!strncmp(line, "seek ", 5)) {                         // "seek <+/- seconds>"
+      audioCmd(AC_SEEK, atoi(line + 5));
+    } else if (!strcmp(line, "pos")) {
+      Serial.printf("pos %u / %u s, state %u\n", (unsigned)posSec, (unsigned)durSec, (unsigned)playState);
     }
   }
 }
