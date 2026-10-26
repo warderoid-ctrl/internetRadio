@@ -3,7 +3,7 @@
 // Stations: favourites saved on the hub (/favs.json, swipeable carousel on the radio page) plus a worldwide
 // search (radio-browser.info, no key) on its own screen.
 
-struct Station { char name[48]; char tag[48]; char url[256]; };
+struct Station { char name[48]; char tag[48]; char url[256]; uint8_t kind; };   // kind: 0 live stream, 1 podcast episode
 
 // first boot only: seeds the favourites, after that they live in /favs.json on the hub's flash
 static const struct { const char *name, *tag, *url; } DEFAULT_FAVS[] = {
@@ -37,10 +37,11 @@ static QueueHandle_t cmdQ;
 static SemaphoreHandle_t metaMx;
 static char metaTitle[160];
 static volatile bool metaDirty = false;
-static volatile uint8_t playState = 0;     // 0 stopped, 1 connecting, 2 playing, 3 error
+static volatile uint8_t playState = 0;     // 0 stopped, 1 connecting, 2 playing, 3 error, 4 episode finished
 static volatile uint8_t audioMode = 0;     // 0 = radio, 1 = overlay (speech / chime / tts file)
 static volatile int resumeStation = -1;    // >= 0: bring the radio back when an overlay finishes
 static volatile bool wantPlaying = false;  // user intent, drives auto-reconnect
+static volatile uint8_t playKind = 0;      // Station::kind of what the audio task plays (episodes end, streams reconnect)
 static int volume = 10;                    // 0..21
 static uint32_t sleepAt = 0;               // millis() when the sleep timer fires (0 = off)
 
@@ -66,7 +67,10 @@ static void onAudioEvent(Audio::msg_t m) {
       break;
     case Audio::evt_eof:
       if (audioMode == 1) { audioMode = 2; }                 // overlay finished -> task resumes radio
-      else if (playState == 2) playState = 3;                // radio dropped
+      else if (playState == 2) {
+        if (playKind == 1) { playState = 4; wantPlaying = false; }   // podcast episode reached its end
+        else playState = 3;                                  // radio dropped
+      }
       break;
     default: break;
   }
@@ -81,6 +85,7 @@ static void audioTask(void *) {
       switch (c.type) {
         case AC_STATION:
           strlcpy(radioUrl, c.str, sizeof(radioUrl));
+          playKind = (uint8_t)c.arg;
           audio.stopSong(); audioMode = 0; wantPlaying = true; playState = 1; connT = millis();
           if (!audio.connecttohost(radioUrl)) playState = 3;
           break;
@@ -145,7 +150,7 @@ static void radioDuckBegin() {
   audioCmd(AC_STOP);
 }
 static void radioDuckEnd() {
-  if (resumeStation >= 0) { resumeStation = -1; audioCmd(AC_STATION, 0, curSt.url); }
+  if (resumeStation >= 0) { resumeStation = -1; audioCmd(AC_STATION, curSt.kind, curSt.url); }
 }
 // speak text through the speaker (TTS) and resume the radio afterwards
 static void saySpeech(const char *text) { audioCmd(AC_SPEECH, 0, text); }
@@ -157,6 +162,7 @@ static void setStation(Station &s, const char *name, const char *tag, const char
   copyAscii(s.name, sizeof(s.name), name);
   copyAscii(s.tag, sizeof(s.tag), tag);
   strlcpy(s.url, url, sizeof(s.url));
+  s.kind = 0;
 }
 static int favFind(const char *url) {
   for (int i = 0; i < nFavs; i++) if (!strcmp(favs[i].url, url)) return i;
@@ -170,6 +176,7 @@ static void stationsSave(const char *path, const Station *list, int n) {
   for (int i = 0; i < n; i++) {
     JsonObject o = a.add<JsonObject>();
     o["n"] = list[i].name; o["t"] = list[i].tag; o["u"] = list[i].url;
+    if (list[i].kind) o["k"] = list[i].kind;
   }
   serializeJson(d, f);
   f.close();
@@ -182,7 +189,8 @@ static int stationsLoad(const char *path, Station *list, int max) {
   if (!deserializeJson(d, f))
     for (JsonObject o : d.as<JsonArray>()) {
       if (n >= max) break;
-      setStation(list[n++], o["n"] | "", o["t"] | "", o["u"] | "");
+      setStation(list[n], o["n"] | "", o["t"] | "", o["u"] | "");
+      list[n++].kind = o["k"] | 0;
     }
   f.close();
   return n;
@@ -190,7 +198,7 @@ static int stationsLoad(const char *path, Station *list, int max) {
 static void favsSave() { stationsSave(FAVS_PATH, favs, nFavs); }
 // put a station at the front of the recently played list (no duplicates)
 static void recentPush(const Station &st) {
-  if (!recents || !st.url[0]) return;
+  if (!recents || !st.url[0] || st.kind == 1) return;        // podcast episodes don't crowd the radio carousel
   int i = 0;
   while (i < nRecent && strcmp(recents[i].url, st.url)) i++;
   if (i == nRecent) i = (nRecent < MAX_RECENT) ? nRecent++ : MAX_RECENT - 1;   // new: drop the oldest if full
@@ -238,7 +246,7 @@ static void playStationData(const Station &s, int favIdx) {
   if (xSemaphoreTake(metaMx, portMAX_DELAY) == pdTRUE) { metaTitle[0] = 0; metaDirty = true; xSemaphoreGive(metaMx); }
   playState = 1; wantPlaying = true;
   reqNowPlaying = true;
-  audioCmd(AC_STATION, 0, curSt.url);
+  audioCmd(AC_STATION, curSt.kind, curSt.url);
 }
 static void playStation(int i) {                             // favourite i, wrapping round
   if (nFavs == 0) return;
@@ -319,11 +327,12 @@ static void setVolume(int v) {
 
 static void onFindStations(lv_event_t *);                     // opens the search screen (in the .ino)
 static void onRenameBtn(lv_event_t *);                        // rename dialog (in the .ino)
+static void onPodcasts(lv_event_t *);                         // podcasts screen (in the .ino)
 static void onFavBtn(lv_event_t *) { favToggle(curSt); }
 static void onNext(lv_event_t *) { playStation(curStation + 1); }
 static void onPrev(lv_event_t *) { playStation(curStation - 1); }
 static void onPlayPause(lv_event_t *) {
-  if (playState == 0 || playState == 3) playCurrent(); else radioStop();
+  if (playState == 0 || playState == 3 || playState == 4) playCurrent(); else radioStop();
 }
 static void onVolume(lv_event_t *e) {
   volume = lv_slider_get_value(sldVol);
@@ -415,6 +424,12 @@ static void carouselRebuild() {
     }
     stationCard(recents[i], CARD_RECENT + i);
   }
+  lv_obj_t *pc = carouselCard(170, C_CARD3);
+  lv_obj_set_user_data(pc, (void *)(intptr_t)CARD_NONE);
+  lv_obj_t *pl = mkLabel(pc, LV_SYMBOL_LIST "\nPodcasts", F_M, C_TEXT);
+  lv_obj_set_style_text_align(pl, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_center(pl);
+  lv_obj_add_event_cb(pc, onPodcasts, LV_EVENT_CLICKED, nullptr);
   lv_obj_t *f = carouselCard(170, C_ACCENT);
   lv_obj_set_user_data(f, (void *)(intptr_t)CARD_NONE);
   lv_obj_set_style_bg_grad_color(f, lv_color_hex(C_ACCENT2), 0);
@@ -743,6 +758,7 @@ static void radioTick(bool netUp) {
     case 1:  st = "Connecting to stream..."; sc = C_WARN; break;
     case 2:  st = LV_SYMBOL_AUDIO " LIVE";   sc = C_GOOD; break;
     case 3:  st = "Stream problem - retrying..."; sc = C_BAD; break;
+    case 4:  st = "Episode finished"; break;
     default: st = "Stopped"; break;
   }
   radioStatusText = st;

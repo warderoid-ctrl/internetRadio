@@ -46,6 +46,7 @@
 #include "rtc.h"
 #include "net_util.h"
 #include "radio_app.h"
+#include "podcasts.h"
 #include "weather.h"
 #include "agenda.h"
 #include "house.h"
@@ -574,6 +575,169 @@ static void onRenameBtn(lv_event_t *) {
   lv_obj_remove_flag(renOv, LV_OBJ_FLAG_HIDDEN);
 }
 
+// ───────────── podcasts: my shows / search (Apple directory) / a show's episodes ─────────────
+static lv_obj_t *scrPod, *podTa, *podKb, *podList, *podStatus, *podTitle, *podSearchBox;
+static bool podInShow = false;                           // showing one show's episodes
+static char podShowName[64];
+static void podLayout(bool kb) {
+  if (podInShow) lv_obj_add_flag(podSearchBox, LV_OBJ_FLAG_HIDDEN); else lv_obj_remove_flag(podSearchBox, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_pos(podStatus, 24, podInShow ? 84 : 158);
+  lv_obj_set_pos(podList, 32, podInShow ? 114 : 190);
+  lv_obj_set_height(podList, podInShow ? 356 : 280);
+  bool showKb = kb && !podInShow;
+  if (showKb) { lv_obj_remove_flag(podKb, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(podList, LV_OBJ_FLAG_HIDDEN); }
+  else { lv_obj_add_flag(podKb, LV_OBJ_FLAG_HIDDEN); lv_obj_remove_flag(podList, LV_OBJ_FLAG_HIDDEN); }
+}
+static lv_obj_t *podRow(int h) {
+  lv_obj_t *row = lv_button_create(podList);
+  lv_obj_set_size(row, 736, h);
+  lv_obj_set_style_bg_color(row, lv_color_hex(C_CARD2), 0);
+  lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(row, lv_color_hex(C_CARD3), LV_STATE_PRESSED);
+  lv_obj_set_style_radius(row, 18, 0);
+  lv_obj_set_style_shadow_width(row, 0, 0);
+  lv_obj_set_style_border_width(row, 0, 0);
+  return row;
+}
+static void podTwoLines(lv_obj_t *row, const char *a, const char *b, int w) {
+  lv_obj_t *n = mkLabel(row, a, F_M, C_TEXT);
+  lv_obj_set_width(n, w);
+  lv_label_set_long_mode(n, LV_LABEL_LONG_DOT);
+  lv_obj_set_pos(n, 4, 0);
+  lv_obj_t *d = mkLabel(row, b, F_XS, C_MUTED);
+  lv_obj_set_width(d, w);
+  lv_label_set_long_mode(d, LV_LABEL_LONG_DOT);
+  lv_obj_set_pos(d, 4, 30);
+}
+static void podOpenShow(const Pod &p) {
+  if (netState != NET_UP) { lv_label_set_text(podStatus, "Connect to Wi-Fi first"); return; }
+  podInShow = true;
+  strlcpy(podShowName, p.name, sizeof(podShowName));
+  strlcpy(epFeed, p.feed, sizeof(epFeed));
+  reqEpisodes = true;
+  lv_label_set_text(podTitle, p.name);
+  lv_obj_clean(podList);
+  lv_label_set_text(podStatus, "Loading episodes...");
+  podLayout(false);
+}
+// rows carry an index: 0..99 my shows, 100+ search results
+static const Pod *podOf(int k) { return k >= 100 ? &podHits[k - 100] : &pods[k]; }
+static void onPodShow(lv_event_t *e) { Pod p = *podOf((int)(intptr_t)lv_event_get_user_data(e)); podOpenShow(p); }
+static void onPodSave(lv_event_t *e) {
+  Pod p = *podOf((int)(intptr_t)lv_event_get_user_data(e));
+  bool was = podFind(p.feed) >= 0;
+  if (!was && nPods >= MAX_PODS) { uiToast("Too many shows - remove one first", C_WARN); return; }
+  podToggle(p);
+  lv_label_set_text(btnLabel((lv_obj_t *)lv_event_get_target(e)), was ? LV_SYMBOL_PLUS : LV_SYMBOL_OK);
+  uiToast(was ? "Removed from My shows" : "Added to My shows", was ? C_MUTED : C_GOOD);
+}
+static void podShowsList(bool results) {                 // my shows, or the search results
+  lv_obj_clean(podList);
+  int n = results ? nPodHits : nPods;
+  for (int i = 0; i < n; i++) {
+    const Pod &p = results ? podHits[i] : pods[i];
+    int k = results ? 100 + i : i;
+    lv_obj_t *row = podRow(66);
+    podTwoLines(row, p.name, p.author, 600);
+    lv_obj_add_event_cb(row, onPodShow, LV_EVENT_CLICKED, (void *)(intptr_t)k);
+    textBtn(row, 650, 0, 64, 46, podFind(p.feed) >= 0 ? LV_SYMBOL_OK : LV_SYMBOL_PLUS, F_M, C_CARD3, onPodSave, (void *)(intptr_t)k);
+  }
+}
+static void podHome() {
+  podInShow = false;
+  lv_label_set_text(podTitle, LV_SYMBOL_LIST "  Podcasts");
+  podShowsList(false);
+  lv_label_set_text(podStatus, nPods ? "My shows - or search for more" : "Search for a show and tap + to keep it");
+  podLayout(false);
+}
+static void onPodEpisode(lv_event_t *e) {
+  const Episode &ep = eps[(intptr_t)lv_event_get_user_data(e)];
+  Station s;
+  setStation(s, ep.title, podShowName, ep.url);
+  s.kind = 1;
+  playStationData(s, -1);
+  lv_screen_load(scrMainRef);
+  showPage(PG_RADIO);
+}
+static void podTick(lv_timer_t *) {
+  static uint8_t seenEp = 0, seenHit = 0;
+  if (epVer != seenEp) {
+    seenEp = epVer;
+    if (!podInShow) return;
+    lv_obj_clean(podList);
+    if (nEps < 0) { lv_label_set_text(podStatus, "Couldn't load this show - try again"); return; }
+    if (nEps == 0) { lv_label_set_text(podStatus, "No playable episodes in this feed"); return; }
+    lv_label_set_text_fmt(podStatus, "Latest %d episodes - tap to play", (int)nEps);
+    for (int i = 0; i < nEps; i++) {
+      lv_obj_t *row = podRow(66);
+      podTwoLines(row, eps[i].title, eps[i].when, 700);
+      lv_obj_add_event_cb(row, onPodEpisode, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+    }
+  }
+  if (podHitVer != seenHit) {
+    seenHit = podHitVer;
+    if (podInShow) return;
+    if (nPodHits < 0) { lv_obj_clean(podList); lv_label_set_text(podStatus, "Search failed - check Wi-Fi and try again"); return; }
+    podShowsList(true);
+    lv_label_set_text_fmt(podStatus, nPodHits ? "%d shows - tap to open, " LV_SYMBOL_PLUS " to keep" : "No shows found", (int)nPodHits);
+  }
+}
+static void podSearch() {
+  const char *q = lv_textarea_get_text(podTa);
+  if (!q[0]) return;
+  if (netState != NET_UP) { lv_label_set_text(podStatus, "Connect to Wi-Fi first"); return; }
+  strlcpy(podQuery, q, sizeof(podQuery));
+  reqPodSearch = true;
+  lv_obj_clean(podList);
+  lv_label_set_text(podStatus, "Searching podcasts...");
+  podLayout(false);
+}
+static void onPodBack(lv_event_t *) { if (podInShow) podHome(); else lv_screen_load(scrMainRef); }
+static void onPodSearchBtn(lv_event_t *) { podSearch(); }
+static void onPodTa(lv_event_t *) { podLayout(true); }
+static void onPodKb(lv_event_t *e) {
+  if (lv_event_get_code(e) == LV_EVENT_READY) podSearch();
+  else if (lv_event_get_code(e) == LV_EVENT_CANCEL) podLayout(false);
+}
+static void podBuild() {
+  scrPod = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(scrPod, lv_color_hex(C_BG), 0);
+  lv_obj_remove_flag(scrPod, LV_OBJ_FLAG_SCROLLABLE);
+  textBtn(scrPod, 20, 14, 120, 56, LV_SYMBOL_LEFT " Back", F_M, C_CARD3, onPodBack);
+  podTitle = mkLabel(scrPod, "", F_L, C_TEXT);
+  lv_obj_set_width(podTitle, 620);
+  lv_label_set_long_mode(podTitle, LV_LABEL_LONG_DOT);
+  lv_obj_set_pos(podTitle, 160, 24);
+  podSearchBox = clearBox(scrPod, 0, 80, SCREEN_W, 74);
+  podTa = lv_textarea_create(podSearchBox);
+  lv_obj_set_pos(podTa, 20, 4);
+  lv_obj_set_size(podTa, 644, 64);
+  lv_textarea_set_one_line(podTa, true);
+  lv_textarea_set_placeholder_text(podTa, "Find a podcast: show, host or topic");
+  lv_obj_set_style_text_font(podTa, F_M, 0);
+  lv_obj_set_style_bg_color(podTa, lv_color_hex(C_CARD2), 0);
+  lv_obj_set_style_text_color(podTa, lv_color_hex(C_TEXT), 0);
+  lv_obj_set_style_border_width(podTa, 0, 0);
+  lv_obj_set_style_radius(podTa, 18, 0);
+  lv_obj_add_event_cb(podTa, onPodTa, LV_EVENT_CLICKED, nullptr);
+  textBtn(podSearchBox, 674, 4, 106, 64, "Search", F_M, C_ACCENT, onPodSearchBtn);
+  podStatus = mkLabel(scrPod, "", F_S, C_MUTED);
+  podList = scrollCol(scrPod, 32, 190, 736, 280, 8);
+  podKb = lv_keyboard_create(scrPod);
+  lv_obj_set_size(podKb, SCREEN_W, 270);
+  lv_obj_align(podKb, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_obj_set_style_text_font(podKb, F_M, 0);
+  lv_keyboard_set_textarea(podKb, podTa);
+  lv_obj_add_event_cb(podKb, onPodKb, LV_EVENT_ALL, nullptr);
+  lv_timer_create(podTick, 200, nullptr);
+}
+static void onPodcasts(lv_event_t *) {
+  if (!scrPod) podBuild();
+  lv_textarea_set_text(podTa, "");
+  podHome();
+  lv_screen_load(scrPod);
+}
+
 // ───────────── find stations: Search / Genres / Places tabs + Feeling lucky ─────────────
 // Results (radio-browser.info) share one list: tap to play, + to keep as a favourite.
 static lv_obj_t *scrFind, *findTa, *findKb, *findList, *findStatus, *findSearchBox, *findGenres, *findPlaces;
@@ -1008,6 +1172,8 @@ static void netTask(void *) {
       if (reqGeo) { reqGeo = false; geoFetch(); }
       if (rbReq) { uint8_t r = rbReq; rbReq = RB_NONE; radioStationsFetch(r); }
       if (reqPlaces) { reqPlaces = false; radioPlacesFetch(); }
+      if (reqEpisodes) { reqEpisodes = false; podEpisodesFetch(); }
+      if (reqPodSearch) { reqPodSearch = false; podSearchFetch(); }
       static uint32_t lastNp = 0;                          // now-playing info for streams that don't send it (BBC)
       if (playState == 2 && audioMode == 0 && (reqNowPlaying || now - lastNp > 30000)) { reqNowPlaying = false; lastNp = now; nowPlayingPoll(); }
       HaCall c;
@@ -1144,6 +1310,7 @@ void setup() {
 
   lfsOk = LittleFS.begin(true);
   favsLoad();
+  podsLoad();
 #if ENABLE_SD
   sdMount();
 #endif
