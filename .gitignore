@@ -1,3 +1,7 @@
 .pio/
 .vscode/
 secrets.h
+.dummy/
+managed_components/
+sdkconfig.*
+dependencies.lock

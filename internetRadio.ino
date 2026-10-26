@@ -192,8 +192,18 @@ static void overlaysBuild() {
 }
 
 // ───────────── Wi-Fi screens ─────────────
+// Mesh-friendly connect: scan every channel and join the strongest node with this name (the default fast scan
+// takes the first match, often a weak far-away node); auto-reconnect re-picks the best node after a drop.
+static void wifiBegin(const String &ssid, const String &pass) {
+  WiFi.mode(WIFI_STA);
+  WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+  WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
+  WiFi.setAutoReconnect(true);
+  WiFi.begin(ssid.c_str(), pass.c_str());
+}
 static void startScan() {
   WiFi.mode(WIFI_STA);
+  if (netState != NET_UP) WiFi.disconnect();   // a pending (re)connect to an out-of-range network makes every scan fail
   WiFi.scanDelete();
   WiFi.scanNetworks(true);
   scanning = true;
@@ -210,8 +220,7 @@ static void showWifiScreen(bool allowBack) {
 static void doConnect(const char *pass) {
   selPass = pass;
   WiFi.disconnect(true);
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(selSSID.c_str(), selPass.c_str());
+  wifiBegin(selSSID, selPass);
   netState = NET_CONNECTING;
   netT0 = millis();
   lv_label_set_text_fmt(wifiPwStatus, "Connecting to %s...", selSSID.c_str());
@@ -617,7 +626,10 @@ static void uiTick(lv_timer_t *) {
   }
   if (netState == NET_BOOT) {
     if (WiFi.status() == WL_CONNECTED) onWifiUp(AUTOPLAY_ON_BOOT);
-    else if (now - netT0 > 15000) showWifiScreen(false);
+    else if (now - netT0 > 15000) {                         // saved network not found (yet)
+      netState = NET_NONE; netT0 = now;
+      if (lv_screen_active() != scrWifi) showWifiScreen(false);   // once, not every tick
+    }
   } else if (netState == NET_CONNECTING) {
     if (WiFi.status() == WL_CONNECTED) { prefs.putString("ssid", selSSID); prefs.putString("pass", selPass); onWifiUp(true); }
     else if (now - netT0 > 20000) {
@@ -626,6 +638,18 @@ static void uiTick(lv_timer_t *) {
       lv_obj_set_style_text_color(wifiPwStatus, lv_color_hex(C_BAD), 0);
       lv_label_set_text(wifiStatus, "Couldn't connect - pick a network to try again");
     }
+  }
+  // keep retrying the saved network in the background (router rebooting, hub moved room), unless the user is
+  // scanning or typing a password
+  if (netState == NET_NONE && !scanning && now - netT0 > 30000 && lv_obj_has_flag(wifiPwView, LV_OBJ_FLAG_HIDDEN)) {
+    String ssid = prefs.getString("ssid", "");
+    if (ssid.length()) {
+      selSSID = ssid; selPass = prefs.getString("pass", "");
+      lv_label_set_text_fmt(wifiStatus, "Trying %s again... (or tap your network)", ssid.c_str());
+      wifiBegin(selSSID, selPass);
+      netState = NET_BOOT;
+    }
+    netT0 = now;
   }
   if (ntpSynced) { ntpSynced = false; systemToRtc(); }
   lv_obj_set_style_text_color(lv_obj_get_child(hdrWifi, 0), lv_color_hex(netState == NET_UP ? C_GOOD : C_BAD), 0);
@@ -770,8 +794,7 @@ void setup() {
   String ssid = prefs.getString("ssid", "");
   if (ssid.length()) {
     selSSID = ssid; selPass = prefs.getString("pass", "");
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(selSSID.c_str(), selPass.c_str());
+    wifiBegin(selSSID, selPass);
     netState = NET_BOOT;
     netT0 = millis();
   } else {
