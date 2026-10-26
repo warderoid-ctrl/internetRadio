@@ -12,7 +12,10 @@
 #include <LittleFS.h>
 #include <SD.h>
 #include "pins_config.h"
-#include "LovyanGFX_Driver.h"
+#define LGFX_USE_V1
+#include <LovyanGFX.hpp>   // only for decoding photos into sprites; the panel itself is driven by esp_lcd below
+#include <esp_lcd_panel_rgb.h>
+#include <esp_lcd_panel_ops.h>
 
 #include <Wire.h>
 #include <WiFi.h>
@@ -37,7 +40,6 @@
 
 #include "config.h"
 
-LGFX gfx;
 
 #include "ui_common.h"
 #include "rtc.h"
@@ -80,9 +82,33 @@ static void showWifiScreen(bool allowBack);
 
 // ───────────── LVGL <-> LovyanGFX glue ─────────────
 static uint32_t lvTick() { return millis(); }
+// 7" RGB panel via esp_lcd with bounce buffers: DMA streams the screen from two small internal-RAM buffers that an
+// ISR refills from the PSRAM frame buffer, so PSRAM traffic elsewhere can no longer shift or tear the picture.
+static esp_lcd_panel_handle_t lcdPanel;
+static void panelInit() {
+  esp_lcd_rgb_panel_config_t c = {};
+  c.clk_src = LCD_CLK_SRC_DEFAULT;
+  c.timings.pclk_hz = 14000000;
+  c.timings.h_res = SCREEN_W; c.timings.v_res = SCREEN_H;
+  c.timings.hsync_pulse_width = 4; c.timings.hsync_back_porch = 8; c.timings.hsync_front_porch = 8;
+  c.timings.vsync_pulse_width = 4; c.timings.vsync_back_porch = 8; c.timings.vsync_front_porch = 8;
+  c.timings.flags.hsync_idle_low = 1; c.timings.flags.vsync_idle_low = 1;   // same signalling as Elecrow's LovyanGFX setup
+  c.timings.flags.pclk_active_neg = 1;
+  c.data_width = 16;
+  c.bits_per_pixel = 16;
+  c.num_fbs = 1;
+  c.bounce_buffer_size_px = SCREEN_W * 8;     // 2 x 12.8 KB internal RAM
+  c.dma_burst_size = 64;
+  c.hsync_gpio_num = 40; c.vsync_gpio_num = 41; c.de_gpio_num = 42; c.pclk_gpio_num = 39; c.disp_gpio_num = -1;
+  const int data[16] = {21, 47, 48, 45, 38,  9, 10, 11, 12, 13, 14,  7, 17, 18, 3, 46};   // B0-4, G0-5, R0-4
+  for (int i = 0; i < 16; i++) c.data_gpio_nums[i] = data[i];
+  c.flags.fb_in_psram = 1;
+  ESP_ERROR_CHECK(esp_lcd_new_rgb_panel(&c, &lcdPanel));
+  ESP_ERROR_CHECK(esp_lcd_panel_reset(lcdPanel));
+  ESP_ERROR_CHECK(esp_lcd_panel_init(lcdPanel));
+}
 static void dispFlush(lv_display_t *d, const lv_area_t *area, uint8_t *px) {
-  if (gfx.getStartCount() > 0) gfx.endWrite();
-  gfx.pushImageDMA(area->x1, area->y1, lv_area_get_width(area), lv_area_get_height(area), (lgfx::rgb565_t *)px);
+  esp_lcd_panel_draw_bitmap(lcdPanel, area->x1, area->y1, area->x2 + 1, area->y2 + 1, px);   // copies into the frame buffer
   lv_display_flush_ready(d);
 }
 // GT911 touch at 0x5D, read through Wire (status 0x814E: bit7 = data ready, low nibble = points; point 1 at 0x8150)
@@ -680,10 +706,7 @@ void setup() {
   }
   stc(STC_TOUCH_ON);
   delay(100);
-  gfx.init();
-  gfx.initDMA();
-  gfx.startWrite();
-  gfx.fillScreen(TFT_BLACK);
+  panelInit();
   setBrightness(brightPct);
 
   lfsOk = LittleFS.begin(true);
@@ -697,7 +720,7 @@ void setup() {
   // One draw buffer in INTERNAL RAM. The RGB panel streams its frame buffer out of PSRAM non-stop; rendering into
   // PSRAM as well starves it and the picture shakes / tears sideways. dispFlush copies synchronously, so a second
   // buffer would buy nothing.
-  const uint32_t bufBytes = SCREEN_W * 24 * 2;
+  const uint32_t bufBytes = SCREEN_W * 16 * 2;
   drawBuf1 = (uint8_t *)heap_caps_malloc(bufBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   if (!drawBuf1) drawBuf1 = (uint8_t *)heap_caps_malloc(bufBytes, MALLOC_CAP_SPIRAM);
   drawBuf2 = nullptr;

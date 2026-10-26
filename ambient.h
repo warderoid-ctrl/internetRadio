@@ -15,7 +15,7 @@ static bool frontIsA = true;
 static bool ambientActive = false;
 static bool ambNight = false;
 static uint32_t ambNextSlide = 0;
-static LGFX_Sprite photoSpr(&gfx);
+static LGFX_Sprite photoSpr;   // decoder only, renders into our own buffers
 static bool sprSwap = false;
 
 struct PhotoRef { char path[56]; uint8_t src; };               // src 0 = LittleFS, 1 = SD

@@ -115,6 +115,8 @@ static void audioBegin() {
 #else
   audio.setPinout(5, 6, 4);                // BCLK, LRC, DOUT: fixed by the board
   stc(STC_SPK_ON);
+  audio.forceMono(true);                   // one speaker: mix both channels instead of losing one
+  audio.setTone(SPK_TONE_LOW, SPK_TONE_MID, SPK_TONE_HIGH);
 #endif
   audio.setVolume(volume);
   xTaskCreatePinnedToCore(audioTask, "audio", 12288, nullptr, 3, nullptr, 0);

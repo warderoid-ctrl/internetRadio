@@ -27,6 +27,11 @@
 #define DAC_BCLK   43
 #define DAC_LRC    44
 #define DAC_DOUT   19
+// Tone for the onboard speaker output, in dB (-40 .. +6). Small speakers can't do bass: feeding it to them just
+// buzzes and distorts, so cut the lows and lift the mids/highs a little. All 0 = flat (use for a good speaker / amp).
+#define SPK_TONE_LOW   -10
+#define SPK_TONE_MID     2
+#define SPK_TONE_HIGH    3
 
 // ───────────── Home Assistant (optional) ─────────────
 // Create a token: HA profile page > Security > Long-lived access tokens.
