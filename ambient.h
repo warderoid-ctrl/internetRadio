@@ -20,6 +20,10 @@ static uint16_t *bufA = nullptr, *bufB = nullptr;
 static bool frontIsA = true;
 static bool ambientActive = false;
 static bool ambNight = false;
+static bool ambPhotoLook = false;                               // showing photos (else the clock)
+// screensaver: 0 auto (photos by day, clock at night), 1 always photos, 2 always the clock. More page, kept in NVS.
+static uint8_t ambMode = 0;
+static const char *AMB_MODE_NAMES[3] = {"Auto", "Photos", "Clock"};
 static uint32_t ambNextSlide = 0;
 static LGFX_Sprite photoSpr;   // decoder only, renders into our own buffers
 static bool sprSwap = false;
@@ -27,6 +31,7 @@ static bool sprSwap = false;
 struct PhotoRef { char path[56]; uint8_t src; };               // src 0 = LittleFS, 1 = SD
 static PhotoRef *photos = nullptr;
 static int nPhotos = 0, photoIdx = -1;
+static bool ambWantPhotos(bool night) { return nPhotos > 0 && (ambMode == 1 || (ambMode == 0 && !night)); }
 static bool sdOk = false;
 static bool lfsOk = false;
 
@@ -351,7 +356,8 @@ static void ambientEnter() {
   if (ambientActive) return;
   photosRescan();
   bool night = isNight();
-  bool havePhoto = !night && nPhotos > 0 && nextPhoto();
+  bool havePhoto = ambWantPhotos(night) && nextPhoto();
+  ambPhotoLook = havePhoto;
   ambientLook(!havePhoto, night);
   ambientActive = true;
   ambNextSlide = millis() + (uint32_t)AMBIENT_SLIDE_SEC * 1000UL;
@@ -373,14 +379,23 @@ static void ambientTick() {
   uint32_t now = millis();
   bool night = isNight();
   if (night != ambNight) {                                      // crossed into/out of night
-    bool photoLook = !night && nPhotos > 0;
+    bool photoLook = ambWantPhotos(night);
+    ambPhotoLook = photoLook;
     ambientLook(!photoLook, night);
     stc(night ? BL_NIGHT : BL_AMBIENT);
     if (photoLook) nextPhoto();
   }
-  if (!ambNight && nPhotos > 1 && (int32_t)(now - ambNextSlide) >= 0) { ambNextSlide = now + (uint32_t)AMBIENT_SLIDE_SEC * 1000UL; nextPhoto(); }
+  if (ambPhotoLook && nPhotos > 1 && (int32_t)(now - ambNextSlide) >= 0) { ambNextSlide = now + (uint32_t)AMBIENT_SLIDE_SEC * 1000UL; nextPhoto(); }
   if (now - lastSec < 1000) return;
   lastSec = now;
+  // burn-in protection: once a minute nudge the clock / overlays along a slow wandering path (+-16 x, +-12 y px)
+  static uint32_t lastShift = 0, step = 0;
+  if (now - lastShift >= 60000) {
+    lastShift = now; step++;
+    int dx = (int)lroundf(16.0f * sinf(step * 0.9f)), dy = (int)lroundf(12.0f * sinf(step * 0.53f + 1.0f));
+    lv_obj_set_pos(ambClockUi, dx, dy);
+    lv_obj_set_pos(ambPhotoUi, dx, dy);
+  }
   struct tm t;
   if (!nowTm(&t)) return;
   char b[12], d[40];

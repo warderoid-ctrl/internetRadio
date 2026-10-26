@@ -527,6 +527,11 @@ static void onBright(lv_event_t *e) {
   if (lv_event_get_code(e) == LV_EVENT_RELEASED) prefs.putUChar("bri", (uint8_t)brightPct);
 }
 static void onMoreFrame(lv_event_t *) { ambientEnter(); }
+static void onAmbMode(lv_event_t *e) {
+  ambMode = (ambMode + 1) % 3;
+  prefs.putUChar("ssmode", ambMode);
+  lv_label_set_text_fmt(btnLabel((lv_obj_t *)lv_event_get_target(e)), "Show: %s", AMB_MODE_NAMES[ambMode]);
+}
 static void onDoomsday(lv_event_t *) {
   setBootMode(1);
   showModal("Doomsday mode armed", "Power the hub OFF. Fit the SX1262 LoRa module, set switches S1 S0 to 01, then power on. The radio, mic and speaker share pins, so this is a separate mode.");
@@ -1166,7 +1171,10 @@ static void moreBuild(lv_obj_t *pg) {
 
   r = moreRow(col, 84);
   morePhotos = mkLabel(r, LV_SYMBOL_IMAGE "  Photo frame", F_M, C_TEXT);
+  oneLine(morePhotos, 270, false);
   lv_obj_set_pos(morePhotos, 20, 26);
+  lv_obj_t *mb = textBtn(r, 300, 14, 190, 56, "", F_S, C_CARD3, onAmbMode);   // screensaver: Auto / Photos / Clock
+  lv_label_set_text_fmt(btnLabel(mb), "Show: %s", AMB_MODE_NAMES[ambMode]);
   textBtn(r, 500, 14, 170, 56, "Start now", F_M, C_CARD3, onMoreFrame);
 
   r = moreRow(col, 108);
@@ -1334,6 +1342,7 @@ void setup() {
   brightPct  = constrain(prefs.getUChar("bri", 100), 10, 100);
   remoteTokenInit();
   weatherLoadLocation();
+  ambMode = prefs.getUChar("ssmode", 0) % 3;
   i2cMx = xSemaphoreCreateMutex();
   dataMx = xSemaphoreCreateMutex();
   uiQ = xQueueCreate(10, sizeof(UiMsg));
