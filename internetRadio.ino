@@ -1233,9 +1233,14 @@ static void uiTick(lv_timer_t *) {
   }
   if (netState == NET_BOOT) {
     if (WiFi.status() == WL_CONNECTED) onWifiUp(AUTOPLAY_ON_BOOT);
-    else if (now - netT0 > 15000) {                         // saved network not found (yet)
-      netState = NET_NONE; netT0 = now;
-      if (lv_screen_active() != scrWifi) showWifiScreen(false);   // once, not every tick
+    else if (now - netT0 > 30000) {                         // saved network not there (yet): router rebooting after a
+      netState = NET_NONE; netT0 = now;                       // power cut, slow mesh... keep the screens, retry quietly
+      static bool told = false;
+      if (!told) {
+        told = true;
+        char m[96]; snprintf(m, sizeof(m), "Can't reach %s yet - retrying. Tap " LV_SYMBOL_WIFI " to change network.", selSSID.c_str());
+        uiToast(m, C_WARN);
+      }
     }
   } else if (netState == NET_CONNECTING) {
     if (WiFi.status() == WL_CONNECTED) { prefs.putString("ssid", selSSID); prefs.putString("pass", selPass); onWifiUp(true); }
@@ -1248,7 +1253,7 @@ static void uiTick(lv_timer_t *) {
   }
   // keep retrying the saved network in the background (router rebooting, hub moved room), unless the user is
   // scanning or typing a password
-  if (netState == NET_NONE && !scanning && now - netT0 > 30000 && lv_obj_has_flag(wifiPwView, LV_OBJ_FLAG_HIDDEN)) {
+  if (netState == NET_NONE && !scanning && now - netT0 > 20000 && lv_obj_has_flag(wifiPwView, LV_OBJ_FLAG_HIDDEN)) {
     String ssid = prefs.getString("ssid", "");
     if (ssid.length()) {
       selSSID = ssid; selPass = prefs.getString("pass", "");
@@ -1410,6 +1415,11 @@ void setup() {
 
   Serial.printf("heap: internal %u free (largest %u), PSRAM %u free\n", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+  // why a connection attempt failed (wrong password vs network not found...), for the serial log
+  WiFi.onEvent([](arduino_event_id_t, arduino_event_info_t info) {
+    uint8_t r = info.wifi_sta_disconnected.reason;
+    Serial.printf("wifi: disconnected, reason %u (%s)\n", r, WiFi.disconnectReasonName((wifi_err_reason_t)r));
+  }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
   String ssid = prefs.getString("ssid", "");
   if (ssid.length()) {
     selSSID = ssid; selPass = prefs.getString("pass", "");
