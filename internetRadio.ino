@@ -351,8 +351,8 @@ static void buildWifi() {
 }
 
 // ───────────── navigation: rail + header ─────────────
-static const char *PAGE_NAMES[N_PAGES] = {"Home", "Radio", "Weather", "Agenda", "House", "Timers", "More"};
-static const char *PAGE_ICONS[N_PAGES] = {LV_SYMBOL_HOME, LV_SYMBOL_AUDIO, LV_SYMBOL_TINT, LV_SYMBOL_LIST, LV_SYMBOL_CHARGE, LV_SYMBOL_BELL, LV_SYMBOL_SETTINGS};
+static const char *PAGE_NAMES[N_PAGES] = {"Home", "Radio", "Podcasts", "Weather", "Agenda", "House", "Timers", "More"};
+static const char *PAGE_ICONS[N_PAGES] = {LV_SYMBOL_HOME, LV_SYMBOL_AUDIO, LV_SYMBOL_LIST, LV_SYMBOL_TINT, LV_SYMBOL_LIST, LV_SYMBOL_CHARGE, LV_SYMBOL_BELL, LV_SYMBOL_SETTINGS};
 
 static void showPage(int p) {
   if (p < 0 || p >= N_PAGES) return;
@@ -382,17 +382,18 @@ static void buildChrome(lv_obj_t *scr) {
   for (int i = 0; i < N_PAGES; i++) {
     lv_obj_t *b = lv_button_create(scr);
     railBtn[i] = b;
-    lv_obj_set_pos(b, 6, 6 + i * 66);
-    lv_obj_set_size(b, RAIL_W - 12, 62);
+    lv_obj_set_pos(b, 6, 4 + i * 59);
+    lv_obj_set_size(b, RAIL_W - 12, 56);
     lv_obj_set_style_radius(b, 20, 0);
     lv_obj_set_style_bg_color(b, lv_color_hex(C_CARD3), 0);
     lv_obj_set_style_bg_opa(b, LV_OPA_TRANSP, 0);
     lv_obj_set_style_shadow_width(b, 0, 0);
     lv_obj_set_style_border_width(b, 0, 0);
-    lv_obj_t *ic = mkLabel(b, PAGE_ICONS[i], F_L, C_MUTED);
-    lv_obj_align(ic, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_pad_all(b, 2, 0);
+    lv_obj_t *ic = mkLabel(b, PAGE_ICONS[i], F_M, C_MUTED);
+    lv_obj_align(ic, LV_ALIGN_TOP_MID, 0, 2);
     lv_obj_t *cap = mkLabel(b, PAGE_NAMES[i], F_XS, C_MUTED);
-    lv_obj_align(cap, LV_ALIGN_BOTTOM_MID, 0, 2);
+    lv_obj_align(cap, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_add_event_cb(b, onRail, LV_EVENT_CLICKED, (void *)(intptr_t)i);
   }
   lblPageTitle = mkLabel(scr, "Home", F_L, C_TEXT);
@@ -575,22 +576,25 @@ static void onRenameBtn(lv_event_t *) {
   lv_obj_remove_flag(renOv, LV_OBJ_FLAG_HIDDEN);
 }
 
-// ───────────── podcasts: my shows / search (Apple directory) / a show's episodes ─────────────
-static lv_obj_t *scrPod, *podTa, *podKb, *podList, *podStatus, *podTitle, *podSearchBox;
-static bool podInShow = false;                           // showing one show's episodes
-static char podShowName[64];
-static void podLayout(bool kb) {
-  if (podInShow) lv_obj_add_flag(podSearchBox, LV_OBJ_FLAG_HIDDEN); else lv_obj_remove_flag(podSearchBox, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_set_pos(podStatus, 24, podInShow ? 84 : 158);
-  lv_obj_set_pos(podList, 32, podInShow ? 114 : 190);
-  lv_obj_set_height(podList, podInShow ? 356 : 280);
-  bool showKb = kb && !podInShow;
-  if (showKb) { lv_obj_remove_flag(podKb, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(podList, LV_OBJ_FLAG_HIDDEN); }
-  else { lv_obj_add_flag(podKb, LV_OBJ_FLAG_HIDDEN); lv_obj_remove_flag(podList, LV_OBJ_FLAG_HIDDEN); }
+// ───────────── Podcasts page: New (latest from followed shows) / Following / Find ─────────────
+static lv_obj_t *pcTabBtn[3], *pcList, *pcStatus, *pcSearchBox, *pcTa, *pcKb;
+static int pcTab = 0;                                   // 0 New, 1 Following, 2 Find
+static bool pcInShow = false;                           // showing one show's episodes (from Following / Find)
+static char pcShowName[64];
+static void pcLayout(bool kb) {
+  for (int t = 0; t < 3; t++) lv_obj_set_style_bg_color(pcTabBtn[t], lv_color_hex(t == pcTab ? C_ACCENT : C_CARD3), 0);
+  bool find = (pcTab == 2 && !pcInShow);
+  if (find) lv_obj_remove_flag(pcSearchBox, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(pcSearchBox, LV_OBJ_FLAG_HIDDEN);
+  int y = find ? 150 : 90;
+  lv_obj_set_pos(pcStatus, 16, y - 28);
+  lv_obj_set_pos(pcList, 12, y);
+  lv_obj_set_height(pcList, PAGE_H - 4 - y);
+  if (find && kb) { lv_obj_remove_flag(pcKb, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(pcList, LV_OBJ_FLAG_HIDDEN); }
+  else { lv_obj_add_flag(pcKb, LV_OBJ_FLAG_HIDDEN); lv_obj_remove_flag(pcList, LV_OBJ_FLAG_HIDDEN); }
 }
-static lv_obj_t *podRow(int h) {
-  lv_obj_t *row = lv_button_create(podList);
-  lv_obj_set_size(row, 736, h);
+static lv_obj_t *pcRow() {
+  lv_obj_t *row = lv_button_create(pcList);
+  lv_obj_set_size(row, 688, 66);
   lv_obj_set_style_bg_color(row, lv_color_hex(C_CARD2), 0);
   lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
   lv_obj_set_style_bg_color(row, lv_color_hex(C_CARD3), LV_STATE_PRESSED);
@@ -599,143 +603,171 @@ static lv_obj_t *podRow(int h) {
   lv_obj_set_style_border_width(row, 0, 0);
   return row;
 }
-static void podTwoLines(lv_obj_t *row, const char *a, const char *b, int w) {
+static void pcTwoLines(lv_obj_t *row, const char *a, const char *b, int w, bool dot = false) {
+  int x = dot ? 22 : 4;
+  if (dot) {                                            // unplayed marker
+    lv_obj_t *d = panel(row, 2, 12, 10, 10, C_ACCENT, LV_RADIUS_CIRCLE);
+    lv_obj_remove_flag(d, LV_OBJ_FLAG_CLICKABLE);
+  }
   lv_obj_t *n = mkLabel(row, a, F_M, C_TEXT);
-  lv_obj_set_width(n, w);
+  lv_obj_set_width(n, w - x);
   lv_label_set_long_mode(n, LV_LABEL_LONG_DOT);
-  lv_obj_set_pos(n, 4, 0);
+  lv_obj_set_pos(n, x, 0);
   lv_obj_t *d = mkLabel(row, b, F_XS, C_MUTED);
-  lv_obj_set_width(d, w);
+  lv_obj_set_width(d, w - x);
   lv_label_set_long_mode(d, LV_LABEL_LONG_DOT);
-  lv_obj_set_pos(d, 4, 30);
+  lv_obj_set_pos(d, x, 30);
 }
-static void podOpenShow(const Pod &p) {
-  if (netState != NET_UP) { lv_label_set_text(podStatus, "Connect to Wi-Fi first"); return; }
-  podInShow = true;
-  strlcpy(podShowName, p.name, sizeof(podShowName));
+static void pcPlay(const Episode &ep, const char *show) {
+  Station s;
+  setStation(s, ep.title, show, ep.url);
+  s.kind = 1;
+  podMarkPlayed(ep.url);
+  playStationData(s, -1);
+  showPage(PG_RADIO);
+}
+static void pcNewList() {                               // "New": latest across followed shows
+  lv_obj_clean(pcList);
+  DATA_LOCK();
+  for (int i = 0; i < nNew; i++) {
+    lv_obj_t *row = pcRow();
+    char d[80]; snprintf(d, sizeof(d), "%s  -  %s", newEps[i].show, newEps[i].e.when);
+    pcTwoLines(row, newEps[i].e.title, d, 680, !podIsPlayed(newEps[i].e.url));
+    lv_obj_add_event_cb(row, [](lv_event_t *e) {
+      int k = (int)(intptr_t)lv_event_get_user_data(e);
+      if (k >= nNew) return;
+      NewEp x = newEps[k];
+      pcPlay(x.e, x.show);
+    }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+  }
+  int n = nNew;
+  DATA_UNLOCK();
+  if (newLoading && !n) lv_label_set_text(pcStatus, "Checking your shows for new episodes...");
+  else if (!n) lv_label_set_text(pcStatus, nPods ? "No episodes yet - tap " LV_SYMBOL_REFRESH " to check" : "Follow some shows in Find");
+  else lv_label_set_text(pcStatus, newLoading ? "Latest from the shows you follow (checking...)" : "Latest from the shows you follow");
+}
+// rows carry an index: 0..99 followed shows, 100+ search results
+static const Pod *pcPodOf(int k) { return k >= 100 ? &podHits[k - 100] : &pods[k]; }
+static void pcOpenShow(const Pod &p) {
+  if (netState != NET_UP) { lv_label_set_text(pcStatus, "Connect to Wi-Fi first"); return; }
+  pcInShow = true;
+  strlcpy(pcShowName, p.name, sizeof(pcShowName));
   strlcpy(epFeed, p.feed, sizeof(epFeed));
   reqEpisodes = true;
-  lv_label_set_text(podTitle, p.name);
-  lv_obj_clean(podList);
-  lv_label_set_text(podStatus, "Loading episodes...");
-  podLayout(false);
+  lv_obj_clean(pcList);
+  lv_label_set_text_fmt(pcStatus, "%s - loading episodes...", p.name);
+  pcLayout(false);
 }
-// rows carry an index: 0..99 my shows, 100+ search results
-static const Pod *podOf(int k) { return k >= 100 ? &podHits[k - 100] : &pods[k]; }
-static void onPodShow(lv_event_t *e) { Pod p = *podOf((int)(intptr_t)lv_event_get_user_data(e)); podOpenShow(p); }
-static void onPodSave(lv_event_t *e) {
-  Pod p = *podOf((int)(intptr_t)lv_event_get_user_data(e));
+static void onPcShow(lv_event_t *e) { Pod p = *pcPodOf((int)(intptr_t)lv_event_get_user_data(e)); pcOpenShow(p); }
+static void onPcFollow(lv_event_t *e) {
+  Pod p = *pcPodOf((int)(intptr_t)lv_event_get_user_data(e));
   bool was = podFind(p.feed) >= 0;
-  if (!was && nPods >= MAX_PODS) { uiToast("Too many shows - remove one first", C_WARN); return; }
+  if (!was && nPods >= MAX_PODS) { uiToast("Following too many shows - unfollow one first", C_WARN); return; }
   podToggle(p);
   lv_label_set_text(btnLabel((lv_obj_t *)lv_event_get_target(e)), was ? LV_SYMBOL_PLUS : LV_SYMBOL_OK);
-  uiToast(was ? "Removed from My shows" : "Added to My shows", was ? C_MUTED : C_GOOD);
+  uiToast(was ? "Unfollowed" : "Following - new episodes show up in New", was ? C_MUTED : C_GOOD);
 }
-static void podShowsList(bool results) {                 // my shows, or the search results
-  lv_obj_clean(podList);
+static void pcShowsList(bool results) {                 // followed shows, or search results
+  lv_obj_clean(pcList);
   int n = results ? nPodHits : nPods;
   for (int i = 0; i < n; i++) {
     const Pod &p = results ? podHits[i] : pods[i];
     int k = results ? 100 + i : i;
-    lv_obj_t *row = podRow(66);
-    podTwoLines(row, p.name, p.author, 600);
-    lv_obj_add_event_cb(row, onPodShow, LV_EVENT_CLICKED, (void *)(intptr_t)k);
-    textBtn(row, 650, 0, 64, 46, podFind(p.feed) >= 0 ? LV_SYMBOL_OK : LV_SYMBOL_PLUS, F_M, C_CARD3, onPodSave, (void *)(intptr_t)k);
+    lv_obj_t *row = pcRow();
+    pcTwoLines(row, p.name, p.author, 600);
+    lv_obj_add_event_cb(row, onPcShow, LV_EVENT_CLICKED, (void *)(intptr_t)k);
+    textBtn(row, 610, 0, 64, 46, podFind(p.feed) >= 0 ? LV_SYMBOL_OK : LV_SYMBOL_PLUS, F_M, C_CARD3, onPcFollow, (void *)(intptr_t)k);
   }
 }
-static void podHome() {
-  podInShow = false;
-  lv_label_set_text(podTitle, LV_SYMBOL_LIST "  Podcasts");
-  podShowsList(false);
-  lv_label_set_text(podStatus, nPods ? "My shows - or search for more" : "Search for a show and tap + to keep it");
-  podLayout(false);
+static void pcShowTab(int t) {
+  pcTab = t;
+  pcInShow = false;
+  if (t == 0) pcNewList();
+  else if (t == 1) { pcShowsList(false); lv_label_set_text(pcStatus, nPods ? "Shows you follow - tap for episodes, " LV_SYMBOL_OK " to unfollow" : "Follow shows from Find"); }
+  else { lv_obj_clean(pcList); lv_label_set_text(pcStatus, "Search the podcast directory (or a SoundCloud show)"); }
+  pcLayout(t == 2);
 }
-static void onPodEpisode(lv_event_t *e) {
-  const Episode &ep = eps[(intptr_t)lv_event_get_user_data(e)];
-  Station s;
-  setStation(s, ep.title, podShowName, ep.url);
-  s.kind = 1;
-  playStationData(s, -1);
-  lv_screen_load(scrMainRef);
-  showPage(PG_RADIO);
+static void onPcTab(lv_event_t *e) { pcShowTab((int)(intptr_t)lv_event_get_user_data(e)); }
+static void onPcRefresh(lv_event_t *) {
+  if (netState != NET_UP) { lv_label_set_text(pcStatus, "Connect to Wi-Fi first"); return; }
+  reqNewEps = true;
+  newLoading = true;
+  pcShowTab(0);
 }
-static void podTick(lv_timer_t *) {
-  static uint8_t seenEp = 0, seenHit = 0;
+static void onPcEpisode(lv_event_t *e) {
+  int k = (int)(intptr_t)lv_event_get_user_data(e);
+  if (k < nEps) { Episode ep = eps[k]; pcPlay(ep, pcShowName); }
+}
+static void pcTick(lv_timer_t *) {
+  static uint8_t seenEp = 0, seenHit = 0, seenNew = 0;
   if (epVer != seenEp) {
     seenEp = epVer;
-    if (!podInShow) return;
-    lv_obj_clean(podList);
-    if (nEps < 0) { lv_label_set_text(podStatus, "Couldn't load this show - try again"); return; }
-    if (nEps == 0) { lv_label_set_text(podStatus, "No playable episodes in this feed"); return; }
-    lv_label_set_text_fmt(podStatus, "Latest %d episodes - tap to play", (int)nEps);
+    if (!pcInShow) return;
+    lv_obj_clean(pcList);
+    if (nEps < 0) { lv_label_set_text(pcStatus, "Couldn't load this show - try again"); return; }
+    if (nEps == 0) { lv_label_set_text(pcStatus, "No playable episodes in this feed"); return; }
+    lv_label_set_text_fmt(pcStatus, "%s - latest %d episodes", pcShowName, (int)nEps);
     for (int i = 0; i < nEps; i++) {
-      lv_obj_t *row = podRow(66);
-      podTwoLines(row, eps[i].title, eps[i].when, 700);
-      lv_obj_add_event_cb(row, onPodEpisode, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+      lv_obj_t *row = pcRow();
+      pcTwoLines(row, eps[i].title, eps[i].when, 680, !podIsPlayed(eps[i].url));
+      lv_obj_add_event_cb(row, onPcEpisode, LV_EVENT_CLICKED, (void *)(intptr_t)i);
     }
   }
   if (podHitVer != seenHit) {
     seenHit = podHitVer;
-    if (podInShow) return;
-    if (nPodHits < 0) { lv_obj_clean(podList); lv_label_set_text(podStatus, "Search failed - check Wi-Fi and try again"); return; }
-    podShowsList(true);
-    lv_label_set_text_fmt(podStatus, nPodHits ? "%d shows - tap to open, " LV_SYMBOL_PLUS " to keep" : "No shows found", (int)nPodHits);
+    if (pcInShow || pcTab != 2) return;
+    if (nPodHits < 0) { lv_obj_clean(pcList); lv_label_set_text(pcStatus, "Search failed - check Wi-Fi and try again"); return; }
+    pcShowsList(true);
+    lv_label_set_text_fmt(pcStatus, nPodHits ? "%d shows - tap for episodes, " LV_SYMBOL_PLUS " to follow" : "No shows found", (int)nPodHits);
+  }
+  if (newVer != seenNew) {
+    seenNew = newVer;
+    if (pcTab == 0 && !pcInShow) pcNewList();
   }
 }
-static void podSearch() {
-  const char *q = lv_textarea_get_text(podTa);
+static void pcSearch() {
+  const char *q = lv_textarea_get_text(pcTa);
   if (!q[0]) return;
-  if (netState != NET_UP) { lv_label_set_text(podStatus, "Connect to Wi-Fi first"); return; }
+  if (netState != NET_UP) { lv_label_set_text(pcStatus, "Connect to Wi-Fi first"); return; }
   strlcpy(podQuery, q, sizeof(podQuery));
   reqPodSearch = true;
-  lv_obj_clean(podList);
-  lv_label_set_text(podStatus, "Searching podcasts...");
-  podLayout(false);
+  lv_obj_clean(pcList);
+  lv_label_set_text(pcStatus, "Searching podcasts...");
+  pcLayout(false);
 }
-static void onPodBack(lv_event_t *) { if (podInShow) podHome(); else lv_screen_load(scrMainRef); }
-static void onPodSearchBtn(lv_event_t *) { podSearch(); }
-static void onPodTa(lv_event_t *) { podLayout(true); }
-static void onPodKb(lv_event_t *e) {
-  if (lv_event_get_code(e) == LV_EVENT_READY) podSearch();
-  else if (lv_event_get_code(e) == LV_EVENT_CANCEL) podLayout(false);
+static void onPcSearchBtn(lv_event_t *) { pcSearch(); }
+static void onPcTa(lv_event_t *) { pcLayout(true); }
+static void onPcKb(lv_event_t *e) {
+  if (lv_event_get_code(e) == LV_EVENT_READY) pcSearch();
+  else if (lv_event_get_code(e) == LV_EVENT_CANCEL) pcLayout(false);
 }
-static void podBuild() {
-  scrPod = lv_obj_create(NULL);
-  lv_obj_set_style_bg_color(scrPod, lv_color_hex(C_BG), 0);
-  lv_obj_remove_flag(scrPod, LV_OBJ_FLAG_SCROLLABLE);
-  textBtn(scrPod, 20, 14, 120, 56, LV_SYMBOL_LEFT " Back", F_M, C_CARD3, onPodBack);
-  podTitle = mkLabel(scrPod, "", F_L, C_TEXT);
-  lv_obj_set_width(podTitle, 620);
-  lv_label_set_long_mode(podTitle, LV_LABEL_LONG_DOT);
-  lv_obj_set_pos(podTitle, 160, 24);
-  podSearchBox = clearBox(scrPod, 0, 80, SCREEN_W, 74);
-  podTa = lv_textarea_create(podSearchBox);
-  lv_obj_set_pos(podTa, 20, 4);
-  lv_obj_set_size(podTa, 644, 64);
-  lv_textarea_set_one_line(podTa, true);
-  lv_textarea_set_placeholder_text(podTa, "Find a podcast: show, host or topic");
-  lv_obj_set_style_text_font(podTa, F_M, 0);
-  lv_obj_set_style_bg_color(podTa, lv_color_hex(C_CARD2), 0);
-  lv_obj_set_style_text_color(podTa, lv_color_hex(C_TEXT), 0);
-  lv_obj_set_style_border_width(podTa, 0, 0);
-  lv_obj_set_style_radius(podTa, 18, 0);
-  lv_obj_add_event_cb(podTa, onPodTa, LV_EVENT_CLICKED, nullptr);
-  textBtn(podSearchBox, 674, 4, 106, 64, "Search", F_M, C_ACCENT, onPodSearchBtn);
-  podStatus = mkLabel(scrPod, "", F_S, C_MUTED);
-  podList = scrollCol(scrPod, 32, 190, 736, 280, 8);
-  podKb = lv_keyboard_create(scrPod);
-  lv_obj_set_size(podKb, SCREEN_W, 270);
-  lv_obj_align(podKb, LV_ALIGN_BOTTOM_MID, 0, 0);
-  lv_obj_set_style_text_font(podKb, F_M, 0);
-  lv_keyboard_set_textarea(podKb, podTa);
-  lv_obj_add_event_cb(podKb, onPodKb, LV_EVENT_ALL, nullptr);
-  lv_timer_create(podTick, 200, nullptr);
-}
-static void onPodcasts(lv_event_t *) {
-  if (!scrPod) podBuild();
-  lv_textarea_set_text(podTa, "");
-  podHome();
-  lv_screen_load(scrPod);
+static void podcastsBuild(lv_obj_t *pg) {
+  static const char *tabs[3] = {"New", "Following", LV_SYMBOL_EDIT " Find"};
+  for (int t = 0; t < 3; t++) pcTabBtn[t] = textBtn(pg, 12 + t * 172, 4, 164, 50, tabs[t], F_S, C_CARD3, onPcTab, (void *)(intptr_t)t);
+  textBtn(pg, 628, 4, 72, 50, LV_SYMBOL_REFRESH, F_M, C_CARD3, onPcRefresh);
+  pcSearchBox = clearBox(pg, 0, 60, PAGE_W, 64);
+  pcTa = lv_textarea_create(pcSearchBox);
+  lv_obj_set_pos(pcTa, 12, 2);
+  lv_obj_set_size(pcTa, 580, 58);
+  lv_textarea_set_one_line(pcTa, true);
+  lv_textarea_set_placeholder_text(pcTa, "Show, host or topic");
+  lv_obj_set_style_text_font(pcTa, F_M, 0);
+  lv_obj_set_style_bg_color(pcTa, lv_color_hex(C_CARD2), 0);
+  lv_obj_set_style_text_color(pcTa, lv_color_hex(C_TEXT), 0);
+  lv_obj_set_style_border_width(pcTa, 0, 0);
+  lv_obj_set_style_radius(pcTa, 18, 0);
+  lv_obj_add_event_cb(pcTa, onPcTa, LV_EVENT_CLICKED, nullptr);
+  textBtn(pcSearchBox, 600, 2, 100, 58, "Search", F_M, C_ACCENT, onPcSearchBtn);
+  pcStatus = mkLabel(pg, "", F_S, C_MUTED);
+  pcList = scrollCol(pg, 12, 90, 688, 320, 8);
+  pcKb = lv_keyboard_create(pg);
+  lv_obj_set_size(pcKb, PAGE_W, 240);
+  lv_obj_align(pcKb, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_obj_set_style_text_font(pcKb, F_M, 0);
+  lv_keyboard_set_textarea(pcKb, pcTa);
+  lv_obj_add_event_cb(pcKb, onPcKb, LV_EVENT_ALL, nullptr);
+  lv_timer_create(pcTick, 200, nullptr);
+  pcShowTab(0);
 }
 
 // ───────────── find stations: Search / Genres / Places tabs + Feeling lucky ─────────────
@@ -1173,6 +1205,8 @@ static void netTask(void *) {
       if (rbReq) { uint8_t r = rbReq; rbReq = RB_NONE; radioStationsFetch(r); }
       if (reqPlaces) { reqPlaces = false; radioPlacesFetch(); }
       if (reqEpisodes) { reqEpisodes = false; podEpisodesFetch(); }
+      static uint32_t lastNew = 0;                         // podcasts "New": at boot, every 3 h, and on follow changes
+      if (reqNewEps || !lastNew || now - lastNew > 3UL * 3600000UL) { reqNewEps = false; lastNew = now; newEpsFetch(); }
       if (reqPodSearch) { reqPodSearch = false; podSearchFetch(); }
       static uint32_t lastNp = 0;                          // now-playing info for streams that don't send it (BBC)
       if (playState == 2 && audioMode == 0 && (reqNowPlaying || now - lastNp > 30000)) { reqNowPlaying = false; lastNp = now; nowPlayingPoll(); }
@@ -1350,6 +1384,7 @@ void setup() {
   buildChrome(scrMainRef);
   homeBuild(pages[PG_HOME]);
   radioBuild(pages[PG_RADIO]);
+  podcastsBuild(pages[PG_PODCASTS]);
   weatherBuild(pages[PG_WEATHER]);
   agendaBuild(pages[PG_AGENDA]);
   houseBuild(pages[PG_HOUSE]);

@@ -249,7 +249,7 @@ static bool localIntent(const char *t, char *reply, size_t rn) {
     act(VA_RESUME); snprintf(reply, rn, "Playing the radio."); return true;
   }
   // navigation / modes
-  struct { const char *w; int p; const char *say; } nav[] = {{"weather", PG_WEATHER, ""}, {"timers", PG_TIMERS, ""}, {"house", PG_HOUSE, ""}, {"lights", PG_HOUSE, ""}, {"home screen", PG_HOME, ""}, {"home page", PG_HOME, ""}};
+  struct { const char *w; int p; const char *say; } nav[] = {{"weather", PG_WEATHER, ""}, {"timers", PG_TIMERS, ""}, {"house", PG_HOUSE, ""}, {"lights", PG_HOUSE, ""}, {"home screen", PG_HOME, ""}, {"home page", PG_HOME, ""}, {"podcast", PG_PODCASTS, ""}};
   if (hasAny(t, {"show", "go to", "open", "take me"})) for (auto &x : nav) if (has(t, x.w)) { act(VA_PAGE, x.p); snprintf(reply, rn, "Here you go."); return true; }
   if (hasAny(t, {"photo frame", "screensaver", "screen saver", "night mode", "good night", "goodnight", "clock mode", "ambient"})) { act(VA_AMBIENT); snprintf(reply, rn, "Good night."); return true; }
   // small talk

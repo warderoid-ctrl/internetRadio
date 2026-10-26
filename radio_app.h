@@ -327,7 +327,6 @@ static void setVolume(int v) {
 
 static void onFindStations(lv_event_t *);                     // opens the search screen (in the .ino)
 static void onRenameBtn(lv_event_t *);                        // rename dialog (in the .ino)
-static void onPodcasts(lv_event_t *);                         // podcasts screen (in the .ino)
 static void onFavBtn(lv_event_t *) { favToggle(curSt); }
 static void onNext(lv_event_t *) { playStation(curStation + 1); }
 static void onPrev(lv_event_t *) { playStation(curStation - 1); }
@@ -424,12 +423,6 @@ static void carouselRebuild() {
     }
     stationCard(recents[i], CARD_RECENT + i);
   }
-  lv_obj_t *pc = carouselCard(170, C_CARD3);
-  lv_obj_set_user_data(pc, (void *)(intptr_t)CARD_NONE);
-  lv_obj_t *pl = mkLabel(pc, LV_SYMBOL_LIST "\nPodcasts", F_M, C_TEXT);
-  lv_obj_set_style_text_align(pl, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_center(pl);
-  lv_obj_add_event_cb(pc, onPodcasts, LV_EVENT_CLICKED, nullptr);
   lv_obj_t *f = carouselCard(170, C_ACCENT);
   lv_obj_set_user_data(f, (void *)(intptr_t)CARD_NONE);
   lv_obj_set_style_bg_grad_color(f, lv_color_hex(C_ACCENT2), 0);

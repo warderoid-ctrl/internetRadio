@@ -243,7 +243,7 @@ static volatile uint32_t wxVer = 0, agVer = 0, haVer = 0;
 #define DATA_UNLOCK() xSemaphoreGive(dataMx)
 
 // ───────────── navigation ─────────────
-enum Page : uint8_t { PG_HOME, PG_RADIO, PG_WEATHER, PG_AGENDA, PG_HOUSE, PG_TIMERS, PG_MORE, N_PAGES };
+enum Page : uint8_t { PG_HOME, PG_RADIO, PG_PODCASTS, PG_WEATHER, PG_AGENDA, PG_HOUSE, PG_TIMERS, PG_MORE, N_PAGES };
 static lv_obj_t *pages[N_PAGES];
 static lv_obj_t *railBtn[N_PAGES];
 static lv_obj_t *lblPageTitle;

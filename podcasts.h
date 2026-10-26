@@ -1,6 +1,7 @@
 #pragma once
 // Podcasts: saved shows (/pods.json), Apple's podcast directory for search (no key), episodes read straight from the
 // show's RSS feed. SoundCloud accounts publish such feeds too (Benji B, The Lot Radio). netTask does the fetching.
+// You follow shows; "New" merges the latest episodes of every followed show (refreshed every few hours).
 
 struct Pod { char name[64]; char author[48]; char feed[256]; };
 #define MAX_PODS 20
@@ -27,6 +28,36 @@ static volatile uint8_t podHitVer = 0;
 static char podQuery[48];
 static volatile bool reqPodSearch = false;
 
+// "New": latest episodes across followed shows, newest first
+struct NewEp { Episode e; char show[48]; uint32_t day; };      // day = yyyymmdd, for sorting
+#define MAX_NEW 40
+#define NEW_PER_SHOW 3
+#define NEW_PATH "/newEps.json"
+static NewEp *newEps = nullptr;                               // PSRAM
+static volatile int nNew = 0;
+static volatile uint8_t newVer = 0;
+static volatile bool reqNewEps = false;
+static volatile bool newLoading = false;
+
+// played episodes: small ring of URL hashes in NVS, so "New" can mark what you haven't heard
+#define MAX_PLAYED 100
+static uint32_t played[MAX_PLAYED];
+static int nPlayed = 0, playedPos = 0;
+static uint32_t urlHash(const char *s) { uint32_t h = 2166136261u; while (*s) { h ^= (uint8_t)*s++; h *= 16777619u; } return h; }
+static bool podIsPlayed(const char *url) {
+  uint32_t h = urlHash(url);
+  for (int i = 0; i < nPlayed; i++) if (played[i] == h) return true;
+  return false;
+}
+static void podMarkPlayed(const char *url) {
+  if (podIsPlayed(url)) return;
+  played[playedPos] = urlHash(url);
+  playedPos = (playedPos + 1) % MAX_PLAYED;
+  if (nPlayed < MAX_PLAYED) nPlayed++;
+  prefs.putBytes("played", played, sizeof(uint32_t) * nPlayed);
+  prefs.putUShort("playedPos", playedPos);
+}
+
 static void podsSave() {
   File f = LittleFS.open(PODS_PATH, "w");
   if (!f) return;
@@ -41,10 +72,49 @@ static void setPod(Pod &p, const char *name, const char *author, const char *fee
   copyAscii(p.author, sizeof(p.author), author);
   strlcpy(p.feed, feed, sizeof(p.feed));
 }
+static uint32_t dayKey(const char *when) {                    // "21 Oct 2026" -> 20261021
+  static const char *M = "JanFebMarAprMayJunJulAugSepOctNovDec";
+  int d = 0, y = 0; char mon[4] = "";
+  if (sscanf(when, "%d %3s %d", &d, mon, &y) != 3) return 0;
+  const char *p = strstr(M, mon);
+  return (uint32_t)y * 10000 + (p ? (p - M) / 3 + 1 : 0) * 100 + d;
+}
+static void newEpsSave() {
+  File f = LittleFS.open(NEW_PATH, "w");
+  if (!f) return;
+  JsonDocument d;
+  JsonArray a = d.to<JsonArray>();
+  for (int i = 0; i < nNew; i++) {
+    JsonObject o = a.add<JsonObject>();
+    o["t"] = newEps[i].e.title; o["w"] = newEps[i].e.when; o["u"] = newEps[i].e.url; o["s"] = newEps[i].show; o["d"] = newEps[i].day;
+  }
+  serializeJson(d, f);
+  f.close();
+}
+static void newEpsLoad() {
+  File f = LittleFS.open(NEW_PATH, "r");
+  if (!f) return;
+  JsonDocument d;
+  int n = 0;
+  if (!deserializeJson(d, f))
+    for (JsonObject o : d.as<JsonArray>()) {
+      if (n >= MAX_NEW) break;
+      NewEp &x = newEps[n++];
+      strlcpy(x.e.title, o["t"] | "", sizeof(x.e.title)); strlcpy(x.e.when, o["w"] | "", sizeof(x.e.when));
+      strlcpy(x.e.url, o["u"] | "", sizeof(x.e.url)); strlcpy(x.show, o["s"] | "", sizeof(x.show));
+      x.day = o["d"] | 0;
+    }
+  f.close();
+  nNew = n;
+}
 static void podsLoad() {                                      // after LittleFS.begin()
   if (!pods) pods = (Pod *)heap_caps_calloc(MAX_PODS, sizeof(Pod), MALLOC_CAP_SPIRAM);
   if (!eps) eps = (Episode *)heap_caps_calloc(MAX_EPS, sizeof(Episode), MALLOC_CAP_SPIRAM);
   if (!podHits) podHits = (Pod *)heap_caps_calloc(POD_HITS, sizeof(Pod), MALLOC_CAP_SPIRAM);
+  if (!newEps) newEps = (NewEp *)heap_caps_calloc(MAX_NEW, sizeof(NewEp), MALLOC_CAP_SPIRAM);
+  size_t pb = prefs.getBytesLength("played");
+  if (pb && pb <= sizeof(played)) { prefs.getBytes("played", played, pb); nPlayed = pb / sizeof(uint32_t); playedPos = prefs.getUShort("playedPos", 0) % MAX_PLAYED; }
+  if (newEps) newEpsLoad();
   if (!pods) return;
   nPods = 0;
   File f = LittleFS.open(PODS_PATH, "r");
@@ -67,23 +137,27 @@ static bool podToggle(const Pod &p) {                        // returns true if 
   if (i >= 0) { memmove(&pods[i], &pods[i + 1], sizeof(Pod) * (nPods - i - 1)); nPods--; }
   else { if (nPods >= MAX_PODS) return false; pods[nPods++] = p; }
   podsSave();
+  reqNewEps = true;                                           // refresh "New" for the changed follow list
   return i < 0;
 }
 
 // ───────────── RSS feed reader: streams the feed and stops after MAX_EPS episodes (feeds can be megabytes) ─────────────
 class RssSink : public Stream {
 public:
+  RssSink(Episode *out, int max) : out(out), max(max) {}
   int n = 0;
   int available() override { return 0; }
   int read() override { return -1; }
   int peek() override { return -1; }
   size_t write(uint8_t c) override { return write(&c, 1); }
   size_t write(const uint8_t *b, size_t len) override {
-    if (n >= MAX_EPS) return 0;                               // short write: HTTPClient stops reading
+    if (n >= max) return 0;                                   // short write: HTTPClient stops reading
     for (size_t i = 0; i < len; i++) feed((char)b[i]);
     return len;
   }
 private:
+  Episode *out;
+  int max;
   char tag[320]; int tl = 0; bool inTag = false;
   char text[200]; int xl = 0;
   enum Field : uint8_t { F_NONE, F_TITLE, F_DATE } field = F_NONE;
@@ -123,7 +197,7 @@ private:
     if (!strcmp(tag, "item") || !strncmp(tag, "item ", 5)) { inItem = true; memset(&cur, 0, sizeof(cur)); return; }
     if (!strcmp(tag, "/item")) {
       inItem = false;
-      if (cur.url[0] && n < MAX_EPS) { if (!cur.title[0]) strlcpy(cur.title, "Episode", sizeof(cur.title)); eps[n++] = cur; }
+      if (cur.url[0] && n < max) { if (!cur.title[0]) strlcpy(cur.title, "Episode", sizeof(cur.title)); out[n++] = cur; }
       return;
     }
     if (!inItem) return;
@@ -145,10 +219,44 @@ private:
   }
 };
 static void podEpisodesFetch() {                              // netTask
-  RssSink sink;
+  RssSink sink(eps, MAX_EPS);
   int code = eps ? httpStream(epFeed, sink) : -1;
   nEps = (code == 200 || sink.n > 0) ? sink.n : -1;          // stopping early reports a write error: that's fine
   epVer++;
+}
+
+// netTask: read the first few episodes of every followed show, merge newest first
+static void newEpsFetch() {
+  if (!newEps || nPods == 0) { nNew = 0; newVer++; return; }
+  newLoading = true;
+  int np = nPods;
+  Pod *snap = (Pod *)heap_caps_malloc(sizeof(Pod) * np, MALLOC_CAP_SPIRAM);
+  NewEp *all = (NewEp *)heap_caps_calloc(np * NEW_PER_SHOW, sizeof(NewEp), MALLOC_CAP_SPIRAM);
+  if (!snap || !all) { free(snap); free(all); newLoading = false; return; }
+  memcpy(snap, pods, sizeof(Pod) * np);                      // the follow list can change while we work
+  int n = 0;
+  for (int i = 0; i < np; i++) {
+    Episode buf[NEW_PER_SHOW];
+    RssSink sink(buf, NEW_PER_SHOW);
+    httpStream(snap[i].feed, sink);
+    for (int k = 0; k < sink.n; k++) {
+      NewEp &x = all[n++];
+      x.e = buf[k];
+      strlcpy(x.show, snap[i].name, sizeof(x.show));
+      x.day = dayKey(buf[k].when);
+    }
+  }
+  std::sort(all, all + n, [](const NewEp &a, const NewEp &b) { return a.day > b.day; });
+  if (n > 0 || np == 0) {                                     // keep the old list if everything failed (no Wi-Fi)
+    DATA_LOCK();
+    nNew = std::min(n, MAX_NEW);
+    memcpy(newEps, all, sizeof(NewEp) * nNew);
+    DATA_UNLOCK();
+    newEpsSave();
+  }
+  free(snap); free(all);
+  newLoading = false;
+  newVer++;
 }
 
 // Apple's podcast directory (free, no key)
