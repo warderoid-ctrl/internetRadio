@@ -20,6 +20,10 @@ static const struct { const char *name, *tag, *url; } DEFAULT_FAVS[] = {
 #define FAVS_PATH "/favs.json"
 static Station *favs = nullptr;            // PSRAM, MAX_FAVS entries
 static int nFavs = 0;
+#define MAX_RECENT 10
+#define RECENT_PATH "/recent.json"
+static Station *recents = nullptr;         // last played, newest first (PSRAM)
+static int nRecent = 0;
 static Station curSt;                      // what's playing: a favourite or a search result
 static int curStation = -1;                // its index in favs, -1 = not a favourite
 static char wxCC[3] = "GB";                // ISO country of the weather location (weather.h sets it; Places lists it first)
@@ -158,36 +162,54 @@ static int favFind(const char *url) {
   for (int i = 0; i < nFavs; i++) if (!strcmp(favs[i].url, url)) return i;
   return -1;
 }
-static void favsSave() {
-  File f = LittleFS.open(FAVS_PATH, "w");
+static void stationsSave(const char *path, const Station *list, int n) {
+  File f = LittleFS.open(path, "w");
   if (!f) return;
   JsonDocument d;
   JsonArray a = d.to<JsonArray>();
-  for (int i = 0; i < nFavs; i++) {
+  for (int i = 0; i < n; i++) {
     JsonObject o = a.add<JsonObject>();
-    o["n"] = favs[i].name; o["t"] = favs[i].tag; o["u"] = favs[i].url;
+    o["n"] = list[i].name; o["t"] = list[i].tag; o["u"] = list[i].url;
   }
   serializeJson(d, f);
   f.close();
+}
+static int stationsLoad(const char *path, Station *list, int max) {
+  File f = LittleFS.open(path, "r");
+  if (!f) return 0;
+  JsonDocument d;
+  int n = 0;
+  if (!deserializeJson(d, f))
+    for (JsonObject o : d.as<JsonArray>()) {
+      if (n >= max) break;
+      setStation(list[n++], o["n"] | "", o["t"] | "", o["u"] | "");
+    }
+  f.close();
+  return n;
+}
+static void favsSave() { stationsSave(FAVS_PATH, favs, nFavs); }
+// put a station at the front of the recently played list (no duplicates)
+static void recentPush(const Station &st) {
+  if (!recents || !st.url[0]) return;
+  int i = 0;
+  while (i < nRecent && strcmp(recents[i].url, st.url)) i++;
+  if (i == nRecent) i = (nRecent < MAX_RECENT) ? nRecent++ : MAX_RECENT - 1;   // new: drop the oldest if full
+  memmove(&recents[1], &recents[0], sizeof(Station) * i);
+  recents[0] = st;
+  stationsSave(RECENT_PATH, recents, nRecent);
 }
 // after LittleFS.begin(): load favourites (seed on first boot) and what was playing last
 static void favsLoad() {
   if (!favs) favs = (Station *)heap_caps_calloc(MAX_FAVS, sizeof(Station), MALLOC_CAP_SPIRAM);
   if (!favs) return;
   nFavs = 0;
-  if (LittleFS.exists(FAVS_PATH)) {
-    File f = LittleFS.open(FAVS_PATH, "r");
-    JsonDocument d;
-    if (f && !deserializeJson(d, f))
-      for (JsonObject o : d.as<JsonArray>()) {
-        if (nFavs >= MAX_FAVS) break;
-        setStation(favs[nFavs++], o["n"] | "", o["t"] | "", o["u"] | "");
-      }
-    if (f) f.close();
-  } else {
+  if (LittleFS.exists(FAVS_PATH)) nFavs = stationsLoad(FAVS_PATH, favs, MAX_FAVS);
+  else {
     for (auto &s : DEFAULT_FAVS) setStation(favs[nFavs++], s.name, s.tag, s.url);
     favsSave();
   }
+  if (!recents) recents = (Station *)heap_caps_calloc(MAX_RECENT, sizeof(Station), MALLOC_CAP_SPIRAM);
+  if (recents && LittleFS.exists(RECENT_PATH)) nRecent = stationsLoad(RECENT_PATH, recents, MAX_RECENT);
   if (prefs.getBytesLength("cur") == sizeof(Station)) prefs.getBytes("cur", &curSt, sizeof(Station));
   else if (nFavs) curSt = favs[0];
   curStation = favFind(curSt.url);
@@ -211,7 +233,8 @@ static void playStationData(const Station &s, int favIdx) {
   lv_label_set_text(lblStation, curSt.name);
   lv_label_set_text(lblTitle, curSt.tag);
   favBtnUpdate();
-  carouselHighlight();                                       // restyle only: this can run inside a card's click event
+  recentPush(curSt);
+  lv_async_call([](void *) { carouselRebuild(); }, nullptr); // after the current event: we may be inside a card's click
   if (xSemaphoreTake(metaMx, portMAX_DELAY) == pdTRUE) { metaTitle[0] = 0; metaDirty = true; xSemaphoreGive(metaMx); }
   playState = 1; wantPlaying = true;
   reqNowPlaying = true;
@@ -247,7 +270,10 @@ static void stationRename(const char *name) {
   if (!name[0]) return;
   copyAscii(curSt.name, sizeof(curSt.name), name);
   prefs.putBytes("cur", &curSt, sizeof(Station));
-  if (curStation >= 0) { strlcpy(favs[curStation].name, curSt.name, sizeof(favs[0].name)); favsSave(); carouselRebuild(); }
+  if (curStation >= 0) { strlcpy(favs[curStation].name, curSt.name, sizeof(favs[0].name)); favsSave(); }
+  for (int i = 0; i < nRecent; i++)
+    if (!strcmp(recents[i].url, curSt.url)) { strlcpy(recents[i].name, curSt.name, sizeof(recents[0].name)); stationsSave(RECENT_PATH, recents, nRecent); }
+  carouselRebuild();
   lv_label_set_text(lblStation, curSt.name);
 }
 
@@ -291,7 +317,6 @@ static void setVolume(int v) {
   prefs.putUChar("vol", (uint8_t)volume);
 }
 
-static void onFavCard(lv_event_t *e) { playStation((int)(intptr_t)lv_event_get_user_data(e)); }
 static void onFindStations(lv_event_t *);                     // opens the search screen (in the .ino)
 static void onRenameBtn(lv_event_t *);                        // rename dialog (in the .ino)
 static void onFavBtn(lv_event_t *) { favToggle(curSt); }
@@ -323,39 +348,75 @@ static lv_obj_t *carouselCard(int w, uint32_t bg) {
   lv_obj_set_style_pad_all(b, 16, 0);
   return b;
 }
-// mark the playing favourite and bring it into view (card i = favs[i]; the last card is "Find stations")
+// Carousel cards carry what they play in user_data: fav index, or CARD_RECENT + recent index (others: CARD_NONE)
+#define CARD_NONE   (-1)
+#define CARD_RECENT 1000
+static const Station *cardStation(lv_obj_t *b) {
+  int k = (int)(intptr_t)lv_obj_get_user_data(b);
+  if (k >= CARD_RECENT && k - CARD_RECENT < nRecent) return &recents[k - CARD_RECENT];
+  if (k >= 0 && k < nFavs) return &favs[k];
+  return nullptr;
+}
+// mark the playing station and bring it into view
 static void carouselHighlight() {
   if (!carousel) return;
   lv_obj_t *sel = nullptr;
-  for (int i = 0; i < nFavs && i < (int)lv_obj_get_child_count(carousel) - 1; i++) {
+  for (int i = 0; i < (int)lv_obj_get_child_count(carousel); i++) {
     lv_obj_t *b = lv_obj_get_child(carousel, i);
-    bool on = (i == curStation);
+    const Station *st = cardStation(b);
+    if (!st) continue;
+    bool on = !strcmp(st->url, curSt.url);
     lv_obj_set_style_bg_color(b, lv_color_hex(on ? C_CARD3 : C_CARD), 0);
     lv_obj_set_style_border_color(b, lv_color_hex(C_ACCENT), 0);
     lv_obj_set_style_border_width(b, on ? 4 : 0, 0);
     lv_obj_set_style_text_color(lv_obj_get_child(b, 1), lv_color_hex(on ? C_ACCENT : C_MUTED), 0);
-    if (on) sel = b;
+    if (on && !sel) sel = b;
   }
   if (sel) lv_obj_scroll_to_view(sel, LV_ANIM_ON);
 }
-// favourites as big swipeable cards, "Find stations" at the end. Never call from a carousel card's own event.
+static void onCarouselCard(lv_event_t *e) {
+  int k = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t *)lv_event_get_current_target(e));
+  if (k >= CARD_RECENT) { const Station *st = cardStation((lv_obj_t *)lv_event_get_current_target(e)); if (st) { Station c = *st; playStationData(c, favFind(c.url)); } }
+  else if (k >= 0) playStation(k);
+}
+static lv_obj_t *stationCard(const Station &st, int key) {
+  lv_obj_t *b = carouselCard(210, C_CARD);
+  lv_obj_set_user_data(b, (void *)(intptr_t)key);
+  lv_obj_t *n = mkLabel(b, st.name, F_M, C_TEXT);
+  lv_obj_set_width(n, 178);
+  lv_label_set_long_mode(n, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_max_height(n, 56, 0);
+  lv_obj_align(n, LV_ALIGN_TOP_LEFT, 0, 0);
+  lv_obj_t *t = mkLabel(b, st.tag, F_XS, C_MUTED);
+  lv_obj_set_width(t, 178);
+  lv_label_set_long_mode(t, LV_LABEL_LONG_DOT);
+  lv_obj_align(t, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+  lv_obj_add_event_cb(b, onCarouselCard, LV_EVENT_CLICKED, nullptr);
+  return b;
+}
+// favourites as big swipeable cards, then recently played (not already favourites), then "Find stations".
+// Never call directly from a carousel card's own event (use lv_async_call).
 static void carouselRebuild() {
   if (!carousel) return;
   lv_obj_clean(carousel);
-  for (int i = 0; i < nFavs; i++) {
-    lv_obj_t *b = carouselCard(210, C_CARD);
-    lv_obj_t *n = mkLabel(b, favs[i].name, F_M, C_TEXT);
-    lv_obj_set_width(n, 178);
-    lv_label_set_long_mode(n, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_max_height(n, 56, 0);
-    lv_obj_align(n, LV_ALIGN_TOP_LEFT, 0, 0);
-    lv_obj_t *t = mkLabel(b, favs[i].tag, F_XS, C_MUTED);
-    lv_obj_set_width(t, 178);
-    lv_label_set_long_mode(t, LV_LABEL_LONG_DOT);
-    lv_obj_align(t, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-    lv_obj_add_event_cb(b, onFavCard, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+  for (int i = 0; i < nFavs; i++) stationCard(favs[i], i);
+  bool header = false;
+  for (int i = 0; i < nRecent; i++) {
+    if (favFind(recents[i].url) >= 0) continue;
+    if (!header) {                                            // small "Recent" marker between the two groups
+      header = true;
+      lv_obj_t *h = lv_obj_create(carousel);
+      lv_obj_remove_style_all(h);
+      lv_obj_set_size(h, 76, 140);
+      lv_obj_set_user_data(h, (void *)(intptr_t)CARD_NONE);
+      lv_obj_t *l = mkLabel(h, LV_SYMBOL_LOOP "\nRecent", F_XS, C_MUTED);
+      lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+      lv_obj_center(l);
+    }
+    stationCard(recents[i], CARD_RECENT + i);
   }
   lv_obj_t *f = carouselCard(170, C_ACCENT);
+  lv_obj_set_user_data(f, (void *)(intptr_t)CARD_NONE);
   lv_obj_set_style_bg_grad_color(f, lv_color_hex(C_ACCENT2), 0);
   lv_obj_set_style_bg_grad_dir(f, LV_GRAD_DIR_VER, 0);
   lv_obj_t *fl = mkLabel(f, LV_SYMBOL_PLUS "\nFind\nstations", F_M, C_TEXT);
