@@ -2,7 +2,7 @@
 // Weather: Open-Meteo (free, no API key). Today + next hours + 7 days. Fetched by the network task.
 
 struct WxHour { int hour; int temp; uint8_t code; int pop; };
-struct WxDay  { char dow[4]; uint8_t code; int hi, lo; int pop; };
+struct WxDay  { char dow[6]; uint8_t wday; uint8_t code; int hi, lo; int pop; };
 struct WxData {
   bool valid = false;
   int temp = 0, feels = 0, hum = 0, wind = 0, code = 0, uv = 0, popToday = 0;
@@ -10,6 +10,7 @@ struct WxData {
   char sunrise[8] = "--:--", sunset[8] = "--:--";
   WxHour hours[8];
   WxDay days[7];
+  WxHour dayHours[7][8];                        // 00:00, 03:00 ... 21:00 for each day (tap a day)
   uint32_t stamp = 0;
 };
 static WxData wx;
@@ -23,15 +24,17 @@ static void weatherLoadLocation() {                    // after prefs.begin()
   wxLat = prefs.getFloat("wxlat", WEATHER_LAT);
   wxLon = prefs.getFloat("wxlon", WEATHER_LON);
   prefs.getString("wxplace", wxPlace, sizeof(wxPlace));
+  prefs.getString("wxcc", wxCC, sizeof(wxCC));
 }
-static void weatherSaveLocation(float lat, float lon, const char *place) {
+static void weatherSaveLocation(float lat, float lon, const char *place, const char *cc) {
   wxLat = lat; wxLon = lon; strlcpy(wxPlace, place, sizeof(wxPlace));
-  prefs.putFloat("wxlat", lat); prefs.putFloat("wxlon", lon); prefs.putString("wxplace", wxPlace);
+  if (cc[0]) strlcpy(wxCC, cc, sizeof(wxCC));
+  prefs.putFloat("wxlat", lat); prefs.putFloat("wxlon", lon); prefs.putString("wxplace", wxPlace); prefs.putString("wxcc", wxCC);
   reqWeather = true;
 }
 
 // place search (Open-Meteo geocoding, no key). The UI sets geoQuery + reqGeo; netTask fills geoHits, bumps geoVer.
-struct GeoHit { char name[40]; char detail[64]; float lat, lon; };
+struct GeoHit { char name[40]; char detail[64]; char cc[3]; float lat, lon; };
 #define GEO_MAX 6
 static GeoHit geoHits[GEO_MAX];
 static volatile int geoN = 0;                          // -1 = search failed
@@ -59,6 +62,7 @@ static void geoFetch() {
         if (country[0]) d += d.length() ? String(", ") + country : String(country);
         copyAscii(g.detail, sizeof(g.detail), d.c_str());
         g.lat = r["latitude"] | 0.0f; g.lon = r["longitude"] | 0.0f;
+        strlcpy(g.cc, r["country_code"] | "", sizeof(g.cc));
       }
     }
   }
@@ -97,7 +101,7 @@ static bool weatherFetch() {
   snprintf(url, sizeof(url),
     "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
     "&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,is_day"
-    "&hourly=temperature_2m,weather_code,precipitation_probability&forecast_hours=16"
+    "&hourly=temperature_2m,weather_code,precipitation_probability"
     "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset,uv_index_max"
     "&forecast_days=7&timezone=auto&wind_speed_unit=%s&temperature_unit=%s",
     wxLat, wxLon, USE_MPH ? "mph" : "kmh", USE_CELSIUS ? "celsius" : "fahrenheit");
@@ -115,8 +119,21 @@ static bool weatherFetch() {
   n.code  = cur["weather_code"] | 0;
   n.day   = (cur["is_day"] | 1) == 1;
   JsonObject hr = doc["hourly"];
+  // hourly runs from 00:00 today (local time) for 7 days: the next hours start at the current hour
+  const char *ct = cur["time"] | "";
+  int start = (strlen(ct) >= 13) ? atoi(ct + 11) : 0;
+  int nh = hr["time"].size();
+  for (int d = 0; d < 7; d++)
+    for (int s = 0; s < 8; s++) {
+      int k = d * 24 + s * 3;
+      WxHour &h = n.dayHours[d][s];
+      h.hour = s * 3;
+      h.temp = (k < nh) ? (int)lroundf(hr["temperature_2m"][k] | 0.0f) : 0;
+      h.code = (k < nh) ? (hr["weather_code"][k] | 0) : 0;
+      h.pop  = (k < nh) ? (hr["precipitation_probability"][k] | 0) : 0;
+    }
   for (int i = 0; i < 8; i++) {
-    int k = i * 2;
+    int k = min(start + i * 2, max(nh - 1, 0));
     const char *t = hr["time"][k] | "";                 // "2026-10-26T16:00"
     n.hours[i].hour = (strlen(t) >= 13) ? atoi(t + 11) : 0;
     n.hours[i].temp = (int)lroundf(hr["temperature_2m"][k] | 0.0f);
@@ -130,7 +147,8 @@ static bool weatherFetch() {
     sscanf(t, "%d-%d-%d", &y, &m, &d);
     struct tm tm = {}; tm.tm_year = y - 1900; tm.tm_mon = m - 1; tm.tm_mday = d; tm.tm_hour = 12;
     mktime(&tm);
-    strlcpy(n.days[i].dow, i == 0 ? "Today" : DOW3[tm.tm_wday & 7], sizeof(n.days[i].dow));
+    strlcpy(n.days[i].dow, i == 0 ? "Today" : DOW3[tm.tm_wday % 7], sizeof(n.days[i].dow));
+    n.days[i].wday = tm.tm_wday % 7;
     n.days[i].code = dl["weather_code"][i] | 0;
     n.days[i].hi = (int)lroundf(dl["temperature_2m_max"][i] | 0.0f);
     n.days[i].lo = (int)lroundf(dl["temperature_2m_min"][i] | 0.0f);
@@ -160,6 +178,60 @@ static void wxSentence(char *out, size_t n) {
 static lv_obj_t *wxBigIcon, *wxLblTemp, *wxLblCond, *wxLblPlace, *wxStat[6];
 static lv_obj_t *wxHrTime[8], *wxHrIcon[8], *wxHrTemp[8];
 static lv_obj_t *wxDyName[7], *wxDyIcon[7], *wxDyTemp[7], *wxDyPop[7];
+static lv_obj_t *wxDetail, *wxDetTitle, *wxDetSub, *wxDetTime[8], *wxDetIcon[8], *wxDetTemp[8], *wxDetPop[8];
+
+// ───────────── day detail: tap a day for its 3-hourly breakdown ─────────────
+static void onWxDetailClose(lv_event_t *) { lv_obj_add_flag(wxDetail, LV_OBJ_FLAG_HIDDEN); }
+static void wxDetailBuild() {
+  wxDetail = lv_obj_create(lv_layer_top());                    // dim the whole screen, tap anywhere to close
+  lv_obj_remove_style_all(wxDetail);
+  lv_obj_set_size(wxDetail, SCREEN_W, SCREEN_H);
+  lv_obj_set_style_bg_color(wxDetail, lv_color_hex(0x000000), 0);
+  lv_obj_set_style_bg_opa(wxDetail, LV_OPA_70, 0);
+  lv_obj_add_flag(wxDetail, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(wxDetail, onWxDetailClose, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *p = card(wxDetail, 40, 60, 720, 360);
+  lv_obj_add_flag(p, LV_OBJ_FLAG_EVENT_BUBBLE);
+  wxDetTitle = mkLabel(p, "", F_L, C_TEXT);
+  lv_obj_set_pos(wxDetTitle, 28, 20);
+  wxDetSub = mkLabel(p, "", F_S, C_MUTED);
+  lv_obj_set_pos(wxDetSub, 28, 62);
+  lv_obj_t *x = textBtn(p, 640, 16, 60, 60, LV_SYMBOL_CLOSE, F_M, C_CARD3, onWxDetailClose);
+  (void)x;
+  for (int i = 0; i < 8; i++) {
+    int cx = 16 + i * 86;
+    wxDetTime[i] = mkLabel(p, "--", F_S, C_MUTED);
+    lv_obj_set_width(wxDetTime[i], 86); lv_obj_set_style_text_align(wxDetTime[i], LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(wxDetTime[i], cx, 116);
+    wxDetIcon[i] = wxIcon(p, cx + 18, 148, 50, WX_CLOUD, false);
+    wxDetTemp[i] = mkLabel(p, "--", F_M, C_TEXT);
+    lv_obj_set_width(wxDetTemp[i], 86); lv_obj_set_style_text_align(wxDetTemp[i], LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(wxDetTemp[i], cx, 214);
+    wxDetPop[i] = mkLabel(p, "", F_S, C_BLUE);
+    lv_obj_set_width(wxDetPop[i], 86); lv_obj_set_style_text_align(wxDetPop[i], LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(wxDetPop[i], cx, 252);
+  }
+  lv_obj_add_flag(wxDetail, LV_OBJ_FLAG_HIDDEN);
+}
+static void onWxDay(lv_event_t *e) {
+  int d = (int)(intptr_t)lv_event_get_user_data(e);
+  DATA_LOCK(); WxData w = wx; DATA_UNLOCK();
+  if (!w.valid) return;
+  if (!wxDetail) wxDetailBuild();
+  lv_label_set_text(wxDetTitle, d == 0 ? "Today" : d == 1 ? "Tomorrow" : DOWF[w.days[d].wday]);
+  char sub[96];
+  snprintf(sub, sizeof(sub), "%s   High %d\xC2\xB0  Low %d\xC2\xB0   Rain %d%%", wxText(w.days[d].code), w.days[d].hi, w.days[d].lo, w.days[d].pop);
+  lv_label_set_text(wxDetSub, sub);
+  for (int i = 0; i < 8; i++) {
+    const WxHour &h = w.dayHours[d][i];
+    lv_label_set_text_fmt(wxDetTime[i], "%02d:00", h.hour);
+    wxDraw(wxDetIcon[i], wxKindOf(h.code), h.hour < 7 || h.hour >= 20);
+    lv_label_set_text_fmt(wxDetTemp[i], "%d\xC2\xB0", h.temp);
+    if (h.pop >= 10) lv_label_set_text_fmt(wxDetPop[i], LV_SYMBOL_TINT " %d%%", h.pop);
+    else lv_label_set_text(wxDetPop[i], "");
+  }
+  lv_obj_remove_flag(wxDetail, LV_OBJ_FLAG_HIDDEN);
+}
 static lv_obj_t *wxLblAge;
 
 static void wxStatMake(lv_obj_t *card, int idx, int x, int y, const char *cap) {
@@ -214,6 +286,11 @@ static void weatherBuild(lv_obj_t *pg) {
     wxDyPop[i] = mkLabel(dy, "", F_XS, C_BLUE);
     lv_obj_set_width(wxDyPop[i], 98); lv_obj_set_style_text_align(wxDyPop[i], LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_pos(wxDyPop[i], x, 92);
+  }
+  for (int i = 0; i < 7; i++) {                              // tap targets on top of each whole day column
+    lv_obj_t *tap = clearBox(dy, 4 + i * 98, 0, 98, 114);
+    lv_obj_add_flag(tap, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(tap, onWxDay, LV_EVENT_CLICKED, (void *)(intptr_t)i);
   }
 }
 

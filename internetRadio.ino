@@ -30,6 +30,7 @@
 #include <RadioLib.h>
 #include <esp_sntp.h>
 #include <mbedtls/platform.h>
+#include <esp_task_wdt.h>
 #include <driver/gpio.h>
 #include <esp_rom_gpio.h>
 #include <soc/gpio_sig_map.h>
@@ -531,21 +532,85 @@ static void onRestart(lv_event_t *) { ESP.restart(); }
 
 static lv_obj_t *moreRow(lv_obj_t *col, int h) { return card(col, 0, 0, 688, h); }
 
-// ───────────── station search screen: search radio-browser.info, tap to play, + to keep as a favourite ─────────────
-static lv_obj_t *scrFind, *findTa, *findKb, *findList, *findStatus;
-static void findShowKb(bool kb) {
-  if (kb) { lv_obj_remove_flag(findKb, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(findList, LV_OBJ_FLAG_HIDDEN); }
+// ───────────── rename the playing station ─────────────
+static lv_obj_t *renOv, *renTa, *renKb;
+static void renClose() { lv_obj_add_flag(renOv, LV_OBJ_FLAG_HIDDEN); }
+static void onRenOk(lv_event_t *) { stationRename(lv_textarea_get_text(renTa)); renClose(); }
+static void onRenCancel(lv_event_t *) { renClose(); }
+static void onRenKb(lv_event_t *e) {
+  if (lv_event_get_code(e) == LV_EVENT_READY) onRenOk(e);
+  else if (lv_event_get_code(e) == LV_EVENT_CANCEL) renClose();
+}
+static void onRenameBtn(lv_event_t *) {
+  if (!renOv) {
+    renOv = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(renOv);
+    lv_obj_set_size(renOv, SCREEN_W, SCREEN_H);
+    lv_obj_set_style_bg_color(renOv, lv_color_hex(C_BG), 0);
+    lv_obj_set_style_bg_opa(renOv, LV_OPA_COVER, 0);
+    lv_obj_add_flag(renOv, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_t *t = mkLabel(renOv, LV_SYMBOL_EDIT "  Rename station", F_L, C_TEXT);
+    lv_obj_set_pos(t, 24, 24);
+    renTa = lv_textarea_create(renOv);
+    lv_obj_set_pos(renTa, 20, 84);
+    lv_obj_set_size(renTa, 520, 64);
+    lv_textarea_set_one_line(renTa, true);
+    lv_textarea_set_max_length(renTa, sizeof(curSt.name) - 1);
+    lv_obj_set_style_text_font(renTa, F_M, 0);
+    lv_obj_set_style_bg_color(renTa, lv_color_hex(C_CARD2), 0);
+    lv_obj_set_style_text_color(renTa, lv_color_hex(C_TEXT), 0);
+    lv_obj_set_style_border_width(renTa, 0, 0);
+    lv_obj_set_style_radius(renTa, 18, 0);
+    textBtn(renOv, 552, 84, 112, 64, "Cancel", F_M, C_CARD3, onRenCancel);
+    textBtn(renOv, 674, 84, 106, 64, "Save", F_M, C_ACCENT, onRenOk);
+    renKb = lv_keyboard_create(renOv);
+    lv_obj_set_size(renKb, SCREEN_W, 270);
+    lv_obj_align(renKb, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_text_font(renKb, F_M, 0);
+    lv_keyboard_set_textarea(renKb, renTa);
+    lv_obj_add_event_cb(renKb, onRenKb, LV_EVENT_ALL, nullptr);
+  }
+  lv_textarea_set_text(renTa, curSt.name);
+  lv_obj_remove_flag(renOv, LV_OBJ_FLAG_HIDDEN);
+}
+
+// ───────────── find stations: Search / Genres / Places tabs + Feeling lucky ─────────────
+// Results (radio-browser.info) share one list: tap to play, + to keep as a favourite.
+static lv_obj_t *scrFind, *findTa, *findKb, *findList, *findStatus, *findSearchBox, *findGenres, *findPlaces;
+static lv_obj_t *findTabBtn[3];
+static int findTab = 0;
+static bool luckyPending = false;
+static int luckyGenre = 0;
+
+static void findLayout(bool kb) {
+  bool srch = (findTab == 0);
+  for (int t = 0; t < 3; t++) lv_obj_set_style_bg_color(findTabBtn[t], lv_color_hex(t == findTab ? C_ACCENT : C_CARD3), 0);
+  if (srch) lv_obj_remove_flag(findSearchBox, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(findSearchBox, LV_OBJ_FLAG_HIDDEN);
+  if (findTab == 1) lv_obj_remove_flag(findGenres, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(findGenres, LV_OBJ_FLAG_HIDDEN);
+  if (findTab == 2) lv_obj_remove_flag(findPlaces, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(findPlaces, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_pos(findStatus, 24, srch ? 158 : 244);
+  lv_obj_set_pos(findList, 32, srch ? 190 : 270);
+  lv_obj_set_height(findList, srch ? 280 : 200);
+  bool showKb = srch && kb;
+  if (showKb) { lv_obj_remove_flag(findKb, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(findList, LV_OBJ_FLAG_HIDDEN); }
   else { lv_obj_add_flag(findKb, LV_OBJ_FLAG_HIDDEN); lv_obj_remove_flag(findList, LV_OBJ_FLAG_HIDDEN); }
+}
+static bool findNetOk() {
+  if (netState == NET_UP) return true;
+  lv_label_set_text(findStatus, "Connect to Wi-Fi first");
+  return false;
+}
+static void findRequest(uint8_t req, const char *q, const char *what) {
+  strlcpy(rbQuery, q, sizeof(rbQuery));
+  rbReq = req;
+  lv_obj_clean(findList);
+  lv_label_set_text_fmt(findStatus, "Loading %s...", what);
 }
 static void findSearch() {
   const char *q = lv_textarea_get_text(findTa);
-  if (!q[0]) return;
-  if (netState != NET_UP) { lv_label_set_text(findStatus, "Connect to Wi-Fi first"); return; }
-  strlcpy(rbQuery, q, sizeof(rbQuery));
-  reqRadioSearch = true;
-  lv_obj_clean(findList);
-  lv_label_set_text(findStatus, "Searching the world...");
-  findShowKb(false);
+  if (!q[0] || !findNetOk()) return;
+  findRequest(RB_SEARCH, q, "stations");
+  findLayout(false);
 }
 static void findFavLabel(lv_obj_t *btn, const Station &s) {
   lv_label_set_text(btnLabel(btn), favFind(s.url) >= 0 ? LV_SYMBOL_OK : LV_SYMBOL_PLUS);
@@ -558,23 +623,108 @@ static void onFindFav(lv_event_t *e) {
   findFavLabel((lv_obj_t *)lv_event_get_target(e), s);
   uiToast(was ? "Removed from favourites" : "Added to favourites", was ? C_MUTED : C_GOOD);
 }
-static void onFindPlay(lv_event_t *e) {
-  const Station &s = rbHits[(intptr_t)lv_event_get_user_data(e)].s;
+static void findPlay(const Station &s) {
   playStationData(s, favFind(s.url));
   lv_screen_load(scrMainRef);
   showPage(PG_RADIO);
 }
-static void findTick(lv_timer_t *) {                     // show results when netTask has them
+static void onFindPlay(lv_event_t *e) { findPlay(rbHits[(intptr_t)lv_event_get_user_data(e)].s); }
+
+// highlight one chip / card in a row of them (restyle only: runs inside their click event)
+static void findMark(lv_obj_t *parent, int sel) {
+  for (int i = 0; i < (int)lv_obj_get_child_count(parent); i++) {
+    lv_obj_t *b = lv_obj_get_child(parent, i);
+    lv_obj_set_style_border_color(b, lv_color_hex(C_ACCENT), 0);
+    lv_obj_set_style_border_width(b, i == sel ? 3 : 0, 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(i == sel ? C_CARD3 : C_CARD2), 0);
+  }
+}
+static void onGenre(lv_event_t *e) {
+  int g = (int)(intptr_t)lv_event_get_user_data(e);
+  findMark(findGenres, g);
+  if (!findNetOk()) return;
+  char w[48]; snprintf(w, sizeof(w), "%s stations", GENRES[g].name);
+  findRequest(RB_BY_GENRE, GENRES[g].tag, w);
+}
+static void onPlace(lv_event_t *e) {
+  int p = (int)(intptr_t)lv_event_get_user_data(e);
+  findMark(findPlaces, p);
+  if (!findNetOk()) return;
+  char w[56]; snprintf(w, sizeof(w), "stations in %s", rbPlaces[p].name);
+  findRequest(RB_BY_PLACE, rbPlaces[p].key, w);
+}
+static lv_obj_t *findChip(lv_obj_t *parent, int w, int h) {
+  lv_obj_t *b = lv_button_create(parent);
+  lv_obj_set_size(b, w, h);
+  lv_obj_set_style_bg_color(b, lv_color_hex(C_CARD2), 0);
+  lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(b, 18, 0);
+  lv_obj_set_style_shadow_width(b, 0, 0);
+  return b;
+}
+static void findPlacesBuild() {
+  lv_obj_clean(findPlaces);
+  for (int i = 0; i < nPlaces; i++) {
+    lv_obj_t *b = findChip(findPlaces, 196, 140);
+    lv_obj_set_style_pad_all(b, 14, 0);
+    lv_obj_t *n = mkLabel(b, rbPlaces[i].name, F_M, C_TEXT);
+    lv_obj_set_width(n, 168);
+    lv_label_set_long_mode(n, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_max_height(n, 80, 0);
+    lv_obj_align(n, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_t *c = mkLabel(b, "", F_XS, i == 0 ? C_ACCENT : C_MUTED);
+    lv_label_set_text_fmt(c, i == 0 ? "Home  -  %d stations" : "%d stations", rbPlaces[i].count);
+    lv_obj_align(c, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_add_event_cb(b, onPlace, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+  }
+}
+static void onFindTab(lv_event_t *e) {
+  findTab = (int)(intptr_t)lv_event_get_user_data(e);
+  lv_obj_clean(findList);
+  if (findTab == 0) lv_label_set_text(findStatus, "Search 50,000 stations worldwide");
+  else if (findTab == 1) lv_label_set_text(findStatus, "Pick a genre (swipe for more)");
+  else {
+    if (nPlaces < 0 && findNetOk()) { nPlaces = -2; reqPlaces = true; }
+    lv_label_set_text(findStatus, nPlaces > 0 ? "Pick a country (swipe for more)" : "Loading countries...");
+  }
+  findLayout(findTab == 0);
+}
+static void onLucky(lv_event_t *) {
+  if (!findNetOk()) return;
+  luckyGenre = esp_random() % N_GENRES;
+  luckyPending = true;
+  char w[48]; snprintf(w, sizeof(w), "something %s", GENRES[luckyGenre].name);
+  findRequest(RB_BY_GENRE, GENRES[luckyGenre].tag, w);
+  findLayout(false);
+}
+
+static void findTick(lv_timer_t *) {
+  static uint8_t seenCat = 0;
+  if (rbCatVer != seenCat) {                             // country list arrived
+    seenCat = rbCatVer;
+    if (nPlaces > 0) findPlacesBuild();
+    if (findTab == 2) lv_label_set_text(findStatus, nPlaces > 0 ? "Pick a country (swipe for more)" : "Couldn't load countries - tap Places again");
+  }
   static uint8_t seen = 0;
   if (rbVer == seen) return;
   seen = rbVer;
   lv_obj_clean(findList);
-  if (rbN < 0) { lv_label_set_text(findStatus, "Search failed - check Wi-Fi and try again"); return; }
-  if (rbN == 0) { lv_label_set_text(findStatus, "Nothing found - try a station name, town or genre"); return; }
+  if (luckyPending) {                                    // Feeling lucky: play a random one of the genre's stations
+    luckyPending = false;
+    if (rbN > 0) {
+      const Station &s = rbHits[esp_random() % rbN].s;
+      char m[96]; snprintf(m, sizeof(m), "Feeling lucky: %s (%s)", s.name, GENRES[luckyGenre].name);
+      findPlay(s);
+      uiToast(m, C_ACCENT);
+      return;
+    }
+  }
+  if (rbN < 0) { lv_label_set_text(findStatus, "Couldn't load stations - check Wi-Fi and try again"); return; }
+  if (rbN == 0) { lv_label_set_text(findStatus, "Nothing found - try another name, town or genre"); return; }
   lv_label_set_text_fmt(findStatus, "%d stations - tap to play, " LV_SYMBOL_PLUS " to keep", (int)rbN);
   for (int i = 0; i < rbN; i++) {
     lv_obj_t *row = lv_button_create(findList);
-    lv_obj_set_size(row, 736, 76);
+    lv_obj_set_size(row, 736, 66);
     lv_obj_set_style_bg_color(row, lv_color_hex(C_CARD2), 0);
     lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(row, lv_color_hex(C_CARD3), LV_STATE_PRESSED);
@@ -584,32 +734,50 @@ static void findTick(lv_timer_t *) {                     // show results when ne
     lv_obj_t *name = mkLabel(row, rbHits[i].s.name, F_M, C_TEXT);
     lv_obj_set_width(name, 600);
     lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
-    lv_obj_set_pos(name, 4, 2);
+    lv_obj_set_pos(name, 4, 0);
     lv_obj_t *det = mkLabel(row, rbHits[i].detail, F_XS, C_MUTED);
     lv_obj_set_width(det, 600);
     lv_label_set_long_mode(det, LV_LABEL_LONG_DOT);
-    lv_obj_set_pos(det, 4, 36);
+    lv_obj_set_pos(det, 4, 30);
     lv_obj_add_event_cb(row, onFindPlay, LV_EVENT_CLICKED, (void *)(intptr_t)i);
-    lv_obj_t *fb = textBtn(row, 650, 4, 64, 52, "", F_M, C_CARD3, onFindFav, (void *)(intptr_t)i);
+    lv_obj_t *fb = textBtn(row, 650, 0, 64, 46, "", F_M, C_CARD3, onFindFav, (void *)(intptr_t)i);
     findFavLabel(fb, rbHits[i].s);
   }
 }
 static void onFindBack(lv_event_t *) { lv_screen_load(scrMainRef); }
 static void onFindSearchBtn(lv_event_t *) { findSearch(); }
-static void onFindTa(lv_event_t *) { findShowKb(true); }
+static void onFindTa(lv_event_t *) { findLayout(true); }
 static void onFindKb(lv_event_t *e) {
   if (lv_event_get_code(e) == LV_EVENT_READY) findSearch();
-  else if (lv_event_get_code(e) == LV_EVENT_CANCEL) findShowKb(false);
+  else if (lv_event_get_code(e) == LV_EVENT_CANCEL) findLayout(false);
+}
+static lv_obj_t *findStrip(int flow) {                   // horizontally swiping area under the tabs
+  lv_obj_t *o = lv_obj_create(scrFind);
+  lv_obj_remove_style_all(o);
+  lv_obj_set_pos(o, 0, 84);
+  lv_obj_set_size(o, SCREEN_W, 152);
+  lv_obj_set_flex_flow(o, (lv_flex_flow_t)flow);
+  lv_obj_set_style_pad_hor(o, 20, 0);
+  lv_obj_set_style_pad_row(o, 8, 0);
+  lv_obj_set_style_pad_column(o, 10, 0);
+  lv_obj_set_scroll_dir(o, LV_DIR_HOR);
+  lv_obj_set_scrollbar_mode(o, LV_SCROLLBAR_MODE_OFF);
+  return o;
 }
 static void findBuild() {
   scrFind = lv_obj_create(NULL);
   lv_obj_set_style_bg_color(scrFind, lv_color_hex(C_BG), 0);
   lv_obj_remove_flag(scrFind, LV_OBJ_FLAG_SCROLLABLE);
-  textBtn(scrFind, 20, 14, 120, 56, LV_SYMBOL_LEFT " Back", F_M, C_CARD3, onFindBack);
-  lv_obj_t *title = mkLabel(scrFind, LV_SYMBOL_AUDIO "  Find stations", F_L, C_TEXT);
-  lv_obj_set_pos(title, 160, 24);
-  findTa = lv_textarea_create(scrFind);
-  lv_obj_set_pos(findTa, 20, 84);
+  textBtn(scrFind, 20, 14, 112, 56, LV_SYMBOL_LEFT " Back", F_M, C_CARD3, onFindBack);
+  static const char *tabs[3] = {LV_SYMBOL_EDIT " Search", "Genres", LV_SYMBOL_GPS " Places"};
+  for (int t = 0; t < 3; t++) findTabBtn[t] = textBtn(scrFind, 146 + t * 142, 14, 134, 56, tabs[t], F_S, C_CARD3, onFindTab, (void *)(intptr_t)t);
+  lv_obj_t *lucky = textBtn(scrFind, 582, 14, 198, 56, LV_SYMBOL_SHUFFLE "  Feeling lucky", F_S, C_ACCENT, onLucky);
+  lv_obj_set_style_bg_grad_color(lucky, lv_color_hex(C_ACCENT2), 0);
+  lv_obj_set_style_bg_grad_dir(lucky, LV_GRAD_DIR_VER, 0);
+
+  findSearchBox = clearBox(scrFind, 0, 80, SCREEN_W, 74);
+  findTa = lv_textarea_create(findSearchBox);
+  lv_obj_set_pos(findTa, 20, 4);
   lv_obj_set_size(findTa, 644, 64);
   lv_textarea_set_one_line(findTa, true);
   lv_textarea_set_placeholder_text(findTa, "Name, town or genre: KEXP, BBC, Paris, jazz...");
@@ -619,9 +787,20 @@ static void findBuild() {
   lv_obj_set_style_border_width(findTa, 0, 0);
   lv_obj_set_style_radius(findTa, 18, 0);
   lv_obj_add_event_cb(findTa, onFindTa, LV_EVENT_CLICKED, nullptr);
-  textBtn(scrFind, 674, 84, 106, 64, "Search", F_M, C_ACCENT, onFindSearchBtn);
+  textBtn(findSearchBox, 674, 4, 106, 64, "Search", F_M, C_ACCENT, onFindSearchBtn);
+
+  findGenres = findStrip(LV_FLEX_FLOW_COLUMN_WRAP);       // 3 rows of genre chips, swipe sideways for more
+  for (int g = 0; g < N_GENRES; g++) {
+    lv_obj_t *b = findChip(findGenres, 168, 44);
+    lv_obj_t *l = mkLabel(b, GENRES[g].name, F_S, C_TEXT);
+    lv_obj_center(l);
+    lv_obj_add_event_cb(b, onGenre, LV_EVENT_CLICKED, (void *)(intptr_t)g);
+  }
+  findPlaces = findStrip(LV_FLEX_FLOW_ROW);                // carousel of countries
+  lv_obj_set_flex_align(findPlaces, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_scroll_snap_x(findPlaces, LV_SCROLL_SNAP_CENTER);
+
   findStatus = mkLabel(scrFind, "", F_S, C_MUTED);
-  lv_obj_set_pos(findStatus, 24, 158);
   findList = scrollCol(scrFind, 32, 190, 736, 280, 8);
   findKb = lv_keyboard_create(scrFind);
   lv_obj_set_size(findKb, SCREEN_W, 270);
@@ -633,9 +812,11 @@ static void findBuild() {
 }
 static void onFindStations(lv_event_t *) {
   if (!scrFind) findBuild();
+  findTab = 0;
   lv_textarea_set_text(findTa, "");
+  lv_obj_clean(findList);
   lv_label_set_text(findStatus, "Search 50,000 stations worldwide");
-  findShowKb(true);
+  findLayout(true);
   lv_screen_load(scrFind);
 }
 
@@ -657,7 +838,7 @@ static void locSearch() {
 }
 static void onLocPick(lv_event_t *e) {
   const GeoHit &g = geoHits[(intptr_t)lv_event_get_user_data(e)];
-  weatherSaveLocation(g.lat, g.lon, g.name);
+  weatherSaveLocation(g.lat, g.lon, g.name, g.cc);
   lv_label_set_text(homeWxPlace, wxPlace);
   lv_label_set_text(wxLblPlace, wxPlace);
   lv_label_set_text_fmt(moreLocLbl, LV_SYMBOL_GPS "  Weather: %s", wxPlace);
@@ -825,7 +1006,10 @@ static void netTask(void *) {
       if (reqAgenda || !lastAg || now - lastAg > 15UL * 60000UL) { reqAgenda = false; lastAg = now; if (!agendaFetch() && agendaConfigured) lastAg = now - 14UL * 60000UL; }
       if (HA_ENABLED && (reqHa || now - lastHa > (curPage == PG_HOUSE ? 4000UL : 30000UL))) { reqHa = false; lastHa = now; haPoll(); }
       if (reqGeo) { reqGeo = false; geoFetch(); }
-      if (reqRadioSearch) { reqRadioSearch = false; radioSearchFetch(); }
+      if (rbReq) { uint8_t r = rbReq; rbReq = RB_NONE; radioStationsFetch(r); }
+      if (reqPlaces) { reqPlaces = false; radioPlacesFetch(); }
+      static uint32_t lastNp = 0;                          // now-playing info for streams that don't send it (BBC)
+      if (playState == 2 && audioMode == 0 && (reqNowPlaying || now - lastNp > 30000)) { reqNowPlaying = false; lastNp = now; nowPlayingPoll(); }
       HaCall c;
       while (haQ && xQueueReceive(haQ, &c, 0) == pdTRUE) haCallNow(c);
     }
@@ -926,6 +1110,13 @@ static void *tlsCalloc(size_t n, size_t sz) {
 void setup() {
   Serial.begin(115200);
   mbedtls_platform_set_calloc_free(tlsCalloc, free);
+  // The audio task (core 0) can keep that core busy for > 5 s on HLS streams (BBC), starving its idle task; the task
+  // watchdog would then reboot the hub. Wi-Fi runs at higher priority and nothing else on core 0 needs the idle task.
+  esp_task_wdt_config_t wdt = {};
+  wdt.timeout_ms = 5000;
+  wdt.idle_core_mask = 0;                                    // core 1's idle task wasn't watched either
+  wdt.trigger_panic = true;
+  esp_task_wdt_reconfigure(&wdt);
   prefs.begin("crowhub", false);
   bootMode   = prefs.getUChar("mode", 0);
   volume     = constrain(prefs.getUChar("vol", 10), 0, 21);
@@ -1021,8 +1212,25 @@ void setup() {
   }
 }
 
+// serial console for testing from a PC (115200): "play <stream url>"
+static void serialTick() {
+  static char line[300];
+  static size_t n = 0;
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c != '\n' && c != '\r') { if (n < sizeof(line) - 1) line[n++] = c; continue; }
+    line[n] = 0; n = 0;
+    if (!strncmp(line, "play ", 5)) {
+      Station s; setStation(s, "Test stream", line + 5, line + 5);
+      playStationData(s, favFind(s.url));
+      Serial.printf("playing %s\n", s.url);
+    }
+  }
+}
+
 void loop() {
   lv_timer_handler();
   remoteTick();
+  serialTick();
   delay(5);
 }

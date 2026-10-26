@@ -22,6 +22,8 @@ static Station *favs = nullptr;            // PSRAM, MAX_FAVS entries
 static int nFavs = 0;
 static Station curSt;                      // what's playing: a favourite or a search result
 static int curStation = -1;                // its index in favs, -1 = not a favourite
+static char wxCC[3] = "GB";                // ISO country of the weather location (weather.h sets it; Places lists it first)
+static volatile bool reqNowPlaying = false; // station changed: fetch now-playing info soon (BBC)
 
 Audio audio(I2S_NUM_1);       // speaker on I2S1: leaves I2S0 free for the PDM microphone (PDM RX only works on I2S0)
 
@@ -49,6 +51,7 @@ static void onAudioEvent(Audio::msg_t m) {
   switch (m.e) {
     case Audio::evt_info:
       if (m.msg && strstr(m.msg, "stream ready") && playState == 1) playState = 2;
+      if (m.msg && playState == 1) Serial.printf("audio: %s\n", m.msg);   // connection progress, for debugging streams
       break;
     case Audio::evt_streamtitle:
       if (audioMode == 0 && xSemaphoreTake(metaMx, 50) == pdTRUE) {
@@ -211,6 +214,7 @@ static void playStationData(const Station &s, int favIdx) {
   carouselHighlight();                                       // restyle only: this can run inside a card's click event
   if (xSemaphoreTake(metaMx, portMAX_DELAY) == pdTRUE) { metaTitle[0] = 0; metaDirty = true; xSemaphoreGive(metaMx); }
   playState = 1; wantPlaying = true;
+  reqNowPlaying = true;
   audioCmd(AC_STATION, 0, curSt.url);
 }
 static void playStation(int i) {                             // favourite i, wrapping round
@@ -238,6 +242,47 @@ static bool favToggle(const Station &s) {
   return i < 0;
 }
 
+// rename what's playing (and its favourite card)
+static void stationRename(const char *name) {
+  if (!name[0]) return;
+  copyAscii(curSt.name, sizeof(curSt.name), name);
+  prefs.putBytes("cur", &curSt, sizeof(Station));
+  if (curStation >= 0) { strlcpy(favs[curStation].name, curSt.name, sizeof(favs[0].name)); favsSave(); carouselRebuild(); }
+  lv_label_set_text(lblStation, curSt.name);
+}
+
+// BBC streams (HLS) carry no track info; the BBC's own "now playing" feed does. Service id comes from the
+// stream URL (".../bbc_6music/..."). netTask polls this while a BBC station plays.
+static bool bbcService(const char *url, char *out, size_t n) {
+  const char *p = strstr(url, "/bbc_");
+  if (!p) return false;
+  p++;
+  size_t k = 0;
+  while (k + 1 < n && ((p[k] >= 'a' && p[k] <= 'z') || (p[k] >= '0' && p[k] <= '9') || p[k] == '_')) { out[k] = p[k]; k++; }
+  out[k] = 0;
+  return k > 4;
+}
+static void nowPlayingPoll() {                               // netTask
+  char svc[40];
+  if (!bbcService(curSt.url, svc, sizeof(svc))) return;
+  String url = String("https://rms.api.bbc.co.uk/v2/services/") + svc + "/segments/latest?experience=domestic&offset=0&limit=1";
+  String body;
+  if (httpGet(url.c_str(), body) != 200) return;
+  JsonDocument doc;
+  if (deserializeJson(doc, body)) return;
+  char t[160] = "";
+  JsonObject seg = doc["data"][0];
+  if (seg["offset"]["now_playing"] | false) {
+    const char *a = seg["titles"]["primary"] | "", *b = seg["titles"]["secondary"] | "";
+    snprintf(t, sizeof(t), "%s%s%s", a, (a[0] && b[0]) ? " - " : "", b);
+  }
+  if (xSemaphoreTake(metaMx, 100) == pdTRUE) {
+    copyAscii(metaTitle, sizeof(metaTitle), t);
+    metaDirty = true;
+    xSemaphoreGive(metaMx);
+  }
+}
+
 static void radioStop() { playState = 0; wantPlaying = false; resumeStation = -1; audioCmd(AC_STOP); }
 static void setVolume(int v) {
   volume = constrain(v, 0, 21);
@@ -248,6 +293,7 @@ static void setVolume(int v) {
 
 static void onFavCard(lv_event_t *e) { playStation((int)(intptr_t)lv_event_get_user_data(e)); }
 static void onFindStations(lv_event_t *);                     // opens the search screen (in the .ino)
+static void onRenameBtn(lv_event_t *);                        // rename dialog (in the .ino)
 static void onFavBtn(lv_event_t *) { favToggle(curSt); }
 static void onNext(lv_event_t *) { playStation(curStation + 1); }
 static void onPrev(lv_event_t *) { playStation(curStation - 1); }
@@ -339,7 +385,7 @@ static void radioBuild(lv_obj_t *pg) {
   lv_obj_set_pos(cap, 24, 14);
 
   lblStation = mkLabel(c, curSt.name, F_L, C_TEXT);
-  lv_obj_set_width(lblStation, 430);
+  lv_obj_set_width(lblStation, 380);
   lv_label_set_long_mode(lblStation, LV_LABEL_LONG_DOT);
   lv_obj_set_pos(lblStation, 24, 34);
 
@@ -351,6 +397,7 @@ static void radioBuild(lv_obj_t *pg) {
   lblStatus = mkLabel(c, "", F_S, C_MUTED);
   lv_obj_set_pos(lblStatus, 24, 106);
 
+  textBtn(c, 404, 18, 60, 52, LV_SYMBOL_EDIT, F_M, C_CARD3, onRenameBtn);
   lv_obj_t *fb = textBtn(c, 474, 18, 190, 52, "", F_S, C_CARD3, onFavBtn);
   lblFav = btnLabel(fb);
   favBtnUpdate();
@@ -387,27 +434,46 @@ static void radioBuild(lv_obj_t *pg) {
   carouselRebuild();
 }
 
-// ───────────── worldwide search (radio-browser.info): UI sets rbQuery + reqRadioSearch, netTask fills rbHits ─────────────
+// ───────────── worldwide stations (radio-browser.info, no key) ─────────────
+// The UI sets rbReq (+ rbQuery); netTask fills rbHits and bumps rbVer. The country list loads once, on demand.
 struct RbHit { Station s; char detail[64]; };
-#define RB_MAX 20
+#define RB_MAX 40
 static RbHit *rbHits = nullptr;                              // PSRAM
-static volatile int rbN = 0;                                 // -1 = search failed
+static volatile int rbN = 0;                                 // -1 = request failed
 static volatile uint8_t rbVer = 0;
-static char rbQuery[48];
-static volatile bool reqRadioSearch = false;
+static char rbQuery[48];                                     // search text, genre tag or country code
+enum RbReq : uint8_t { RB_NONE, RB_SEARCH, RB_BY_GENRE, RB_BY_PLACE };
+static volatile uint8_t rbReq = RB_NONE;
 
-static bool rbCodecOk(const char *c) {                       // what the audio library can play
-  return !strcasecmp(c, "MP3") || !strcasecmp(c, "AAC") || !strcasecmp(c, "AAC+") || !strcasecmp(c, "OGG") || !strcasecmp(c, "FLAC");
-}
-static int rbFetch(const char *endpoint, int n) {          // appends to rbHits, returns the new count (or -1)
-  String url = String("https://de1.api.radio-browser.info/json/stations/") + endpoint;
-  for (const char *c = rbQuery; *c; c++) {
+struct RbCat { char name[36]; char key[36]; int count; };    // a country (key = ISO code)
+#define RB_CATS 80
+static RbCat *rbPlaces = nullptr;
+static volatile int nPlaces = -2;                            // -2 not loaded, -1 failed
+static volatile uint8_t rbCatVer = 0;
+static volatile bool reqPlaces = false;
+
+static void rbAppendEnc(String &url, const char *q) {
+  for (const char *c = q; *c; c++) {
     if (isalnum((unsigned char)*c) || *c == '-' || *c == '.') url += *c;
     else { char h[4]; snprintf(h, sizeof(h), "%%%02X", (unsigned char)*c); url += h; }
   }
-  url += "?limit=30&hidebroken=true&order=clickcount&reverse=true";
+}
+static int rbGet(const char *path, const char *arg, const char *params, String &body) {
+  String url = String("https://de1.api.radio-browser.info/json/") + path;
+  if (arg) rbAppendEnc(url, arg);
+  url += params;
+  return httpGet(url.c_str(), body);
+}
+
+// what the audio library can play. HLS (.m3u8, e.g. all BBC stations) is listed with codec "UNKNOWN" but works.
+static bool rbIsHls(const char *url) { return strstr(url, ".m3u8") != nullptr; }
+static bool rbCodecOk(const char *c, const char *url) {
+  return !strcasecmp(c, "MP3") || !strcasecmp(c, "AAC") || !strcasecmp(c, "AAC+") || !strcasecmp(c, "OGG") ||
+         !strcasecmp(c, "FLAC") || rbIsHls(url);
+}
+static int rbFetch(const char *endpoint, int n) {          // appends stations to rbHits, returns the new count (or -1)
   String body;
-  if (httpGet(url.c_str(), body) != 200) return n ? n : -1;
+  if (rbGet(endpoint, rbQuery, "?limit=60&hidebroken=true&order=clickcount&reverse=true", body) != 200) return n ? n : -1;
   JsonDocument filter;
   JsonObject fo = filter.add<JsonObject>();
   fo["name"] = true; fo["url_resolved"] = true; fo["countrycode"] = true; fo["tags"] = true; fo["codec"] = true; fo["bitrate"] = true;
@@ -417,7 +483,8 @@ static int rbFetch(const char *endpoint, int n) {          // appends to rbHits,
     if (n >= RB_MAX) break;
     const char *u = r["url_resolved"] | "";
     const char *codec = r["codec"] | "";
-    if (!u[0] || strlen(u) >= sizeof(Station::url) || !rbCodecOk(codec)) continue;
+    if (!u[0] || strlen(u) >= sizeof(Station::url) || !rbCodecOk(codec, u)) continue;
+    if (rbIsHls(u)) codec = "HLS";
     bool dup = false;
     for (int i = 0; i < n; i++) if (!strcmp(rbHits[i].s.url, u)) dup = true;
     if (dup) continue;
@@ -428,17 +495,174 @@ static int rbFetch(const char *endpoint, int n) {          // appends to rbHits,
     name.trim();
     setStation(h.s, name.c_str(), tags.length() ? tags.c_str() : (const char *)(r["countrycode"] | ""), u);
     char det[96];
-    snprintf(det, sizeof(det), "%s  %s %d  %s", (const char *)(r["countrycode"] | ""), codec, (int)(r["bitrate"] | 0), tags.c_str());
+    int kbps = r["bitrate"] | 0;
+    if (kbps) snprintf(det, sizeof(det), "%s  %s %d  %s", (const char *)(r["countrycode"] | ""), codec, kbps, tags.c_str());
+    else snprintf(det, sizeof(det), "%s  %s  %s", (const char *)(r["countrycode"] | ""), codec, tags.c_str());
     copyAscii(h.detail, sizeof(h.detail), det);
   }
   return n;
 }
-static void radioSearchFetch() {                             // netTask
+static void radioStationsFetch(uint8_t req) {               // netTask
   if (!rbHits) rbHits = (RbHit *)heap_caps_calloc(RB_MAX, sizeof(RbHit), MALLOC_CAP_SPIRAM);
-  int n = rbHits ? rbFetch("byname/", 0) : -1;
-  if (n >= 0 && n < 5) n = rbFetch("bytag/", n);              // "jazz", "ambient"...: genres too
+  int n = -1;
+  if (rbHits) {
+    if (req == RB_SEARCH) {
+      n = rbFetch("stations/byname/", 0);
+      if (n >= 0 && n < 5) n = rbFetch("stations/bytag/", n);   // "jazz", "ambient"...: genres too
+    } else if (req == RB_BY_GENRE) n = rbFetch("stations/bytagexact/", 0);
+    else if (req == RB_BY_PLACE) n = rbFetch("stations/bycountrycodeexact/", 0);
+  }
   rbN = n;
   rbVer++;
+}
+
+// genres: hand-picked (radio-browser tags are free text and the popular ones are noisy), each with 20+ stations
+static const struct { const char *name, *tag; } GENRES[] = {
+  {"Pop", "pop"},
+  {"Rock", "rock"},
+  {"Jazz", "jazz"},
+  {"Classical", "classical"},
+  {"Dance", "dance"},
+  {"Electronic", "electronic"},
+  {"House", "house"},
+  {"Deep House", "deep house"},
+  {"Techno", "techno"},
+  {"Trance", "trance"},
+  {"Drum & Bass", "drum and bass"},
+  {"Dubstep", "dubstep"},
+  {"Jungle", "jungle"},
+  {"Breakbeat", "breakbeat"},
+  {"Ambient", "ambient"},
+  {"Chillout", "chillout"},
+  {"Chill", "chill"},
+  {"Lounge", "lounge"},
+  {"Downtempo", "downtempo"},
+  {"Lo-fi", "lofi"},
+  {"Trip-Hop", "trip-hop"},
+  {"Indie", "indie"},
+  {"Indie Rock", "indie rock"},
+  {"Alternative", "alternative"},
+  {"Punk", "punk"},
+  {"Hardcore", "hardcore"},
+  {"Grunge", "grunge"},
+  {"Metal", "metal"},
+  {"Hard Rock", "hard rock"},
+  {"Classic Rock", "classic rock"},
+  {"Blues", "blues"},
+  {"Blues Rock", "blues rock"},
+  {"Rockabilly", "rockabilly"},
+  {"Soul", "soul"},
+  {"Motown", "motown"},
+  {"Funk", "funk"},
+  {"R&B", "rnb"},
+  {"Hip Hop", "hip hop"},
+  {"Rap", "rap"},
+  {"Reggae", "reggae"},
+  {"Dancehall", "dancehall"},
+  {"Ska", "ska"},
+  {"Dub", "dub"},
+  {"Afrobeats", "afrobeats"},
+  {"Latin", "latin"},
+  {"Salsa", "salsa"},
+  {"Reggaeton", "reggaeton"},
+  {"Cumbia", "cumbia"},
+  {"Bachata", "bachata"},
+  {"Merengue", "merengue"},
+  {"Bossa Nova", "bossa nova"},
+  {"Samba", "samba"},
+  {"MPB", "mpb"},
+  {"Sertanejo", "sertanejo"},
+  {"Tango", "tango"},
+  {"Mariachi", "mariachi"},
+  {"Country", "country"},
+  {"Americana", "americana"},
+  {"Bluegrass", "bluegrass"},
+  {"Folk", "folk"},
+  {"Celtic", "celtic"},
+  {"World", "world music"},
+  {"Arabic", "arabic"},
+  {"Greek", "greek"},
+  {"Bollywood", "bollywood"},
+  {"K-Pop", "k-pop"},
+  {"J-Pop", "j-pop"},
+  {"Japanese", "japanese"},
+  {"Chanson", "chanson"},
+  {"Schlager", "schlager"},
+  {"Oldies", "oldies"},
+  {"50s", "50s"},
+  {"60s", "60s"},
+  {"70s", "70s"},
+  {"80s", "80s"},
+  {"90s", "90s"},
+  {"2000s", "2000s"},
+  {"Top 40", "top 40"},
+  {"Hits", "hits"},
+  {"Disco", "disco"},
+  {"New Wave", "new wave"},
+  {"Synthwave", "synthwave"},
+  {"EDM", "edm"},
+  {"Hardstyle", "hardstyle"},
+  {"Garage", "garage"},
+  {"Gospel", "gospel"},
+  {"Christian", "christian"},
+  {"Soundtrack", "soundtrack"},
+  {"Piano", "piano"},
+  {"Opera", "opera"},
+  {"Baroque", "baroque"},
+  {"Smooth Jazz", "smooth jazz"},
+  {"Swing", "swing"},
+  {"Big Band", "big band"},
+  {"Easy Listening", "easy listening"},
+  {"Instrumental", "instrumental"},
+  {"Acoustic", "acoustic"},
+  {"Singer-Songwriter", "singer-songwriter"},
+  {"Eclectic", "eclectic"},
+  {"Experimental", "experimental"},
+  {"Psychedelic", "psychedelic"},
+  {"New Age", "new age"},
+  {"Meditation", "meditation"},
+  {"Nature", "nature"},
+  {"Kids", "kids"},
+  {"News", "news"},
+  {"Talk", "talk"},
+  {"Sports", "sports"},
+  {"Comedy", "comedy"},
+  {"Public Radio", "public radio"},
+};
+static const int N_GENRES = sizeof(GENRES) / sizeof(GENRES[0]);
+
+static void radioPlacesFetch() {                             // netTask; the weather location's country first
+  if (!rbPlaces) rbPlaces = (RbCat *)heap_caps_calloc(RB_CATS, sizeof(RbCat), MALLOC_CAP_SPIRAM);
+  String body;
+  int n = -1;
+  if (rbPlaces && rbGet("countries", nullptr, "?order=stationcount&reverse=true&hidebroken=true", body) == 200) {
+    JsonDocument doc;
+    if (!deserializeJson(doc, body)) {
+      n = 1;                                                 // slot 0 = home country, if listed
+      bool home = false;
+      for (JsonObject c : doc.as<JsonArray>()) {
+        const char *cc = c["iso_3166_1"] | "";
+        int cnt = c["stationcount"] | 0;
+        if (!cc[0] || cnt < 5) continue;
+        bool isHome = !strcasecmp(cc, wxCC);
+        if (!isHome && n >= RB_CATS) continue;
+        RbCat &p = rbPlaces[isHome ? 0 : n++];
+        if (isHome) home = true;
+        strlcpy(p.key, cc, sizeof(p.key));
+        String nm = String((const char *)(c["name"] | cc));
+        if (nm.startsWith("The United Kingdom")) nm = "United Kingdom";
+        else if (nm.startsWith("The United States")) nm = "United States";
+        else if (nm.startsWith("The ")) nm = nm.substring(4);
+        int paren = nm.indexOf(" (");
+        if (paren > 0) nm = nm.substring(0, paren);
+        copyAscii(p.name, sizeof(p.name), nm.c_str());
+        p.count = cnt;
+      }
+      if (!home) { memmove(&rbPlaces[0], &rbPlaces[1], sizeof(RbCat) * (n - 1)); n--; }
+    }
+  }
+  nPlaces = n;
+  rbCatVer++;
 }
 
 // called from the 5 Hz tick. Returns the status text so the home page can mirror it.
