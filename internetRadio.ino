@@ -1,0 +1,724 @@
+/*
+  CROW HUB - kitchen hub for the Elecrow CrowPanel Advance 7.0" (ESP32-S3, V1.3 / V1.4 / V1.5)
+
+  Internet radio * weather * appointments * Home Assistant tiles * kitchen timers * voice assistant
+  * photo frame / night clock * phone remote * LoRa survival mesh.
+
+  Read README.md first (setup is ~15 minutes). Settings live in config.h.
+*/
+
+#include <Arduino.h>
+#include <FS.h>            // file systems before LovyanGFX, or its drawJpgFile(fs, ...) overloads aren't built
+#include <LittleFS.h>
+#include <SD.h>
+#include "pins_config.h"
+#include "LovyanGFX_Driver.h"
+
+#include <Wire.h>
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
+#include <WebServer.h>
+#include <ESPmDNS.h>
+#include <Preferences.h>
+#include <SPI.h>
+#include <ESP_I2S.h>
+#include <ArduinoJson.h>
+#include <RadioLib.h>
+#include <esp_sntp.h>
+#include <driver/gpio.h>
+#include <esp_rom_gpio.h>
+#include <soc/gpio_sig_map.h>
+#include <algorithm>
+#include <time.h>
+#include <lvgl.h>
+#include "Audio.h"
+
+#include "config.h"
+
+LGFX gfx;
+
+#include "ui_common.h"
+#include "rtc.h"
+#include "net_util.h"
+#include "radio_app.h"
+#include "weather.h"
+#include "agenda.h"
+#include "house.h"
+#include "timers.h"
+#include "ambient.h"
+#include "voice.h"
+#include "lora.h"
+#include "remote.h"
+
+// ───────────── state ─────────────
+static lv_display_t *disp;
+static uint8_t *drawBuf1, *drawBuf2;
+enum NetState : uint8_t { NET_NONE, NET_BOOT, NET_CONNECTING, NET_UP };
+static NetState netState = NET_NONE;
+static uint32_t netT0 = 0;
+static bool scanning = false;
+static String selSSID, selPass;
+static String netSSID[16];
+static bool netOpen[16];
+static int netCount = 0;
+static volatile bool ntpSynced = false;
+static int bootMode = 0;                                   // 0 = hub, 1 = LoRa survival mesh
+static int brightPct = 100;
+
+static lv_obj_t *scrWifi;
+static lv_obj_t *wifiListView, *wifiPwView, *wifiList, *wifiStatus, *wifiBackBtn, *wifiSsidLbl, *wifiTa, *wifiKb, *wifiPwStatus;
+static lv_obj_t *hdrClock, *hdrTimer, *hdrWifi, *toastBox, *toastLbl, *modalOv, *modalTitle, *modalBody;
+static uint32_t toastUntil = 0;
+// home page
+static lv_obj_t *homeClock, *homeDate, *homeWxIcon, *homeWxTemp, *homeWxCond, *homeWxHiLo, *homeNextT, *homeNextW, *homeStation, *homeStat, *homePlay;
+// more page
+static lv_obj_t *moreWifiLbl, *moreSys, *morePhotos, *moreUrl, *moreQr, *sldBright;
+
+static void showWifiScreen(bool allowBack);
+
+// ───────────── LVGL <-> LovyanGFX glue ─────────────
+static uint32_t lvTick() { return millis(); }
+static void dispFlush(lv_display_t *d, const lv_area_t *area, uint8_t *px) {
+  if (gfx.getStartCount() > 0) gfx.endWrite();
+  gfx.pushImageDMA(area->x1, area->y1, lv_area_get_width(area), lv_area_get_height(area), (lgfx::rgb565_t *)px);
+  lv_display_flush_ready(d);
+}
+static void touchRead(lv_indev_t *, lv_indev_data_t *data) {
+  uint16_t x, y;
+  xSemaphoreTake(i2cMx, portMAX_DELAY);
+  bool t = gfx.getTouch(&x, &y);
+  xSemaphoreGive(i2cMx);
+  if (t) { data->state = LV_INDEV_STATE_PRESSED; data->point.x = x; data->point.y = y; }
+  else data->state = LV_INDEV_STATE_RELEASED;
+}
+
+static void setBrightness(int pct) {
+  brightPct = constrain(pct, 10, 100);
+  stc((uint8_t)((100 - brightPct) * 200 / 100));          // 0 = brightest ... 244 = dimmest
+}
+
+// ───────────── toast + modal ─────────────
+static void uiToast(const char *msg, uint32_t col) {
+  lv_label_set_text(toastLbl, msg);
+  lv_obj_set_style_text_color(toastLbl, lv_color_hex(col), 0);
+  lv_obj_set_style_border_color(toastBox, lv_color_hex(col), 0);
+  lv_obj_remove_flag(toastBox, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_foreground(toastBox);
+  toastUntil = millis() + 5000;
+}
+static void showModal(const char *title, const char *body) {
+  lv_label_set_text(modalTitle, title);
+  lv_label_set_text(modalBody, body);
+  lv_obj_remove_flag(modalOv, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_foreground(modalOv);
+}
+static void onModalOk(lv_event_t *) { lv_obj_add_flag(modalOv, LV_OBJ_FLAG_HIDDEN); }
+static void setBootMode(int m) { bootMode = m; prefs.putUChar("mode", (uint8_t)m); }
+
+static void overlaysBuild() {
+  toastBox = panel(lv_layer_top(), 120, 8, 560, 56, C_CARD, 28);
+  lv_obj_set_style_border_width(toastBox, 3, 0);
+  lv_obj_set_style_shadow_width(toastBox, 30, 0);
+  lv_obj_set_style_shadow_opa(toastBox, LV_OPA_50, 0);
+  toastLbl = mkLabel(toastBox, "", F_M, C_TEXT);
+  lv_obj_set_width(toastLbl, 520);
+  lv_label_set_long_mode(toastLbl, LV_LABEL_LONG_DOT);
+  lv_obj_set_style_text_align(toastLbl, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_center(toastLbl);
+  lv_obj_add_flag(toastBox, LV_OBJ_FLAG_HIDDEN);
+
+  modalOv = panel(lv_layer_top(), 0, 0, SCREEN_W, SCREEN_H, 0x000000, 0);
+  lv_obj_set_style_bg_opa(modalOv, LV_OPA_90, 0);
+  lv_obj_t *c = panel(modalOv, 100, 110, 600, 260, C_CARD, 32);
+  modalTitle = mkLabel(c, "", F_L, C_ACCENT);
+  lv_obj_set_pos(modalTitle, 28, 24);
+  modalBody = mkLabel(c, "", F_M, C_TEXT);
+  lv_obj_set_width(modalBody, 544);
+  lv_label_set_long_mode(modalBody, LV_LABEL_LONG_WRAP);
+  lv_obj_set_pos(modalBody, 28, 82);
+  textBtn(c, 200, 190, 200, 56, "OK", F_M, C_ACCENT, onModalOk);
+  lv_obj_add_flag(modalOv, LV_OBJ_FLAG_HIDDEN);
+}
+
+// ───────────── Wi-Fi screens ─────────────
+static void startScan() {
+  WiFi.mode(WIFI_STA);
+  WiFi.scanDelete();
+  WiFi.scanNetworks(true);
+  scanning = true;
+  lv_obj_clean(wifiList);
+  lv_label_set_text(wifiStatus, "Scanning...");
+}
+static void showListView() { lv_obj_remove_flag(wifiListView, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(wifiPwView, LV_OBJ_FLAG_HIDDEN); }
+static void showWifiScreen(bool allowBack) {
+  if (allowBack) lv_obj_remove_flag(wifiBackBtn, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(wifiBackBtn, LV_OBJ_FLAG_HIDDEN);
+  showListView();
+  lv_screen_load(scrWifi);
+  startScan();
+}
+static void doConnect(const char *pass) {
+  selPass = pass;
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(selSSID.c_str(), selPass.c_str());
+  netState = NET_CONNECTING;
+  netT0 = millis();
+  lv_label_set_text_fmt(wifiPwStatus, "Connecting to %s...", selSSID.c_str());
+  lv_obj_set_style_text_color(wifiPwStatus, lv_color_hex(C_MUTED), 0);
+}
+static void onNetClick(lv_event_t *e) {
+  int idx = (int)(intptr_t)lv_event_get_user_data(e);
+  selSSID = netSSID[idx];
+  if (netOpen[idx]) { showListView(); lv_label_set_text_fmt(wifiStatus, "Connecting to %s...", selSSID.c_str()); doConnect(""); return; }
+  lv_label_set_text(wifiSsidLbl, selSSID.c_str());
+  lv_textarea_set_text(wifiTa, "");
+  lv_label_set_text(wifiPwStatus, "");
+  lv_obj_add_flag(wifiListView, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_remove_flag(wifiPwView, LV_OBJ_FLAG_HIDDEN);
+}
+static void onRescan(lv_event_t *) { startScan(); }
+static void onWifiBack(lv_event_t *) { lv_screen_load(scrMainRef); }
+static void onPwBack(lv_event_t *) { showListView(); }
+static void onConnectBtn(lv_event_t *) { doConnect(lv_textarea_get_text(wifiTa)); }
+static void onKb(lv_event_t *e) {
+  if (lv_event_get_code(e) == LV_EVENT_READY) doConnect(lv_textarea_get_text(wifiTa));
+  else if (lv_event_get_code(e) == LV_EVENT_CANCEL) showListView();
+}
+static void onEye(lv_event_t *) { lv_textarea_set_password_mode(wifiTa, !lv_textarea_get_password_mode(wifiTa)); }
+static void onWifiBtn(lv_event_t *) { showWifiScreen(netState == NET_UP); }
+
+static void populateNetworks() {
+  int n = WiFi.scanComplete();
+  lv_obj_clean(wifiList);
+  netCount = 0;
+  for (int i = 0; i < n && netCount < 16; i++) {
+    String s = WiFi.SSID(i);
+    if (s.length() == 0) continue;
+    bool dup = false;
+    for (int k = 0; k < netCount; k++) if (netSSID[k] == s) dup = true;
+    if (dup) continue;
+    netSSID[netCount] = s;
+    netOpen[netCount] = (WiFi.encryptionType(i) == WIFI_AUTH_OPEN);
+    int rssi = WiFi.RSSI(i);
+    lv_obj_t *row = lv_button_create(wifiList);
+    lv_obj_set_size(row, 736, 64);
+    lv_obj_set_style_bg_color(row, lv_color_hex(C_CARD2), 0);
+    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(row, lv_color_hex(C_CARD3), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(row, 18, 0);
+    lv_obj_set_style_shadow_width(row, 0, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    char buf[40]; copyAscii(buf, sizeof(buf), s.c_str());
+    lv_obj_t *name = mkLabel(row, buf, F_M, C_TEXT);
+    lv_obj_set_width(name, 540);
+    lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+    lv_obj_align(name, LV_ALIGN_LEFT_MID, 12, 0);
+    uint32_t col = rssi > -60 ? C_GOOD : (rssi > -75 ? C_WARN : C_BAD);
+    lv_obj_t *sig = mkLabel(row, netOpen[netCount] ? LV_SYMBOL_WIFI " open" : LV_SYMBOL_WIFI, F_M, col);
+    lv_obj_align(sig, LV_ALIGN_RIGHT_MID, -12, 0);
+    lv_obj_add_event_cb(row, onNetClick, LV_EVENT_CLICKED, (void *)(intptr_t)netCount);
+    netCount++;
+  }
+  WiFi.scanDelete();
+  scanning = false;
+  lv_label_set_text(wifiStatus, netCount ? "Tap your network" : "No networks found - tap Scan");
+}
+
+static void ntpCb(struct timeval *) { ntpSynced = true; }
+
+static void onWifiUp(bool autoplay) {
+  netState = NET_UP;
+  WiFi.setSleep(false);                                      // smoother streaming
+  sntp_set_time_sync_notification_cb(ntpCb);
+  configTzTime(TZ_INFO, "pool.ntp.org", "time.google.com");
+  remoteBegin();
+  reqWeather = true; reqAgenda = true; reqHa = true;
+  if (moreUrl) {
+    char u[80]; snprintf(u, sizeof(u), "http://%s/?k=%s", WiFi.localIP().toString().c_str(), remoteToken.c_str());
+    lv_label_set_text(moreUrl, u);
+    lv_qrcode_update(moreQr, u, strlen(u));
+  }
+  lv_screen_load(scrMainRef);
+  if (autoplay) playStation(curStation);
+}
+
+static void buildWifi() {
+  scrWifi = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(scrWifi, lv_color_hex(C_BG), 0);
+  lv_obj_remove_flag(scrWifi, LV_OBJ_FLAG_SCROLLABLE);
+  wifiListView = clearBox(scrWifi, 0, 0, SCREEN_W, SCREEN_H);
+  lv_obj_t *title = mkLabel(wifiListView, LV_SYMBOL_WIFI "  Connect to Wi-Fi", F_L, C_TEXT);
+  lv_obj_set_pos(title, 32, 22);
+  wifiStatus = mkLabel(wifiListView, "", F_S, C_MUTED);
+  lv_obj_set_pos(wifiStatus, 34, 66);
+  wifiBackBtn = textBtn(wifiListView, 520, 12, 120, 56, LV_SYMBOL_LEFT " Back", F_M, C_CARD3, onWifiBack);
+  textBtn(wifiListView, 650, 12, 126, 56, LV_SYMBOL_REFRESH " Scan", F_M, C_ACCENT, onRescan);
+  wifiList = scrollCol(wifiListView, 32, 96, 736, 364, 10);
+
+  wifiPwView = clearBox(scrWifi, 0, 0, SCREEN_W, SCREEN_H);
+  lv_obj_add_flag(wifiPwView, LV_OBJ_FLAG_HIDDEN);
+  textBtn(wifiPwView, 20, 14, 120, 56, LV_SYMBOL_LEFT " Back", F_M, C_CARD3, onPwBack);
+  wifiSsidLbl = mkLabel(wifiPwView, "", F_L, C_TEXT);
+  lv_obj_set_width(wifiSsidLbl, 600);
+  lv_label_set_long_mode(wifiSsidLbl, LV_LABEL_LONG_DOT);
+  lv_obj_set_pos(wifiSsidLbl, 160, 24);
+  wifiTa = lv_textarea_create(wifiPwView);
+  lv_obj_set_pos(wifiTa, 20, 84);
+  lv_obj_set_size(wifiTa, 560, 64);
+  lv_textarea_set_one_line(wifiTa, true);
+  lv_textarea_set_password_mode(wifiTa, true);
+  lv_textarea_set_placeholder_text(wifiTa, "Wi-Fi password");
+  lv_obj_set_style_text_font(wifiTa, F_M, 0);
+  lv_obj_set_style_bg_color(wifiTa, lv_color_hex(C_CARD2), 0);
+  lv_obj_set_style_text_color(wifiTa, lv_color_hex(C_TEXT), 0);
+  lv_obj_set_style_border_width(wifiTa, 0, 0);
+  lv_obj_set_style_radius(wifiTa, 18, 0);
+  textBtn(wifiPwView, 592, 84, 72, 64, LV_SYMBOL_EYE_OPEN, F_M, C_CARD3, onEye);
+  textBtn(wifiPwView, 674, 84, 106, 64, "Join", F_M, C_ACCENT, onConnectBtn);
+  wifiPwStatus = mkLabel(wifiPwView, "", F_S, C_MUTED);
+  lv_obj_set_pos(wifiPwStatus, 24, 158);
+  wifiKb = lv_keyboard_create(wifiPwView);
+  lv_obj_set_size(wifiKb, SCREEN_W, 270);
+  lv_obj_align(wifiKb, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_obj_set_style_text_font(wifiKb, F_M, 0);
+  lv_keyboard_set_textarea(wifiKb, wifiTa);
+  lv_obj_add_event_cb(wifiKb, onKb, LV_EVENT_ALL, nullptr);
+}
+
+// ───────────── navigation: rail + header ─────────────
+static const char *PAGE_NAMES[N_PAGES] = {"Home", "Radio", "Weather", "Agenda", "House", "Timers", "More"};
+static const char *PAGE_ICONS[N_PAGES] = {LV_SYMBOL_HOME, LV_SYMBOL_AUDIO, LV_SYMBOL_TINT, LV_SYMBOL_LIST, LV_SYMBOL_CHARGE, LV_SYMBOL_BELL, LV_SYMBOL_SETTINGS};
+
+static void showPage(int p) {
+  if (p < 0 || p >= N_PAGES) return;
+  curPage = p;
+  for (int i = 0; i < N_PAGES; i++) {
+    if (i == p) lv_obj_remove_flag(pages[i], LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(pages[i], LV_OBJ_FLAG_HIDDEN);
+    bool sel = (i == p);
+    lv_obj_set_style_bg_opa(railBtn[i], sel ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+    lv_obj_set_style_text_color(lv_obj_get_child(railBtn[i], 0), lv_color_hex(sel ? C_ACCENT : C_MUTED), 0);
+    lv_obj_set_style_text_color(lv_obj_get_child(railBtn[i], 1), lv_color_hex(sel ? C_TEXT : C_MUTED), 0);
+  }
+  lv_label_set_text(lblPageTitle, PAGE_NAMES[p]);
+  if (p == PG_HOUSE) reqHa = true;
+  if (p == PG_WEATHER) weatherRefreshUi();
+  if (p == PG_AGENDA) agendaRefreshUi();
+  if (p == PG_HOUSE) houseRefreshUi();
+}
+static void onRail(lv_event_t *e) { showPage((int)(intptr_t)lv_event_get_user_data(e)); }
+static void onTimerChip(lv_event_t *) { showPage(PG_TIMERS); }
+static void onMicBtn(lv_event_t *) {
+  if (netState != NET_UP) { uiToast("Connect to Wi-Fi first", C_WARN); return; }
+  voiceTrigger();
+}
+
+static void buildChrome(lv_obj_t *scr) {
+  panel(scr, 0, 0, RAIL_W, SCREEN_H, C_CARD, 0);
+  for (int i = 0; i < N_PAGES; i++) {
+    lv_obj_t *b = lv_button_create(scr);
+    railBtn[i] = b;
+    lv_obj_set_pos(b, 6, 6 + i * 66);
+    lv_obj_set_size(b, RAIL_W - 12, 62);
+    lv_obj_set_style_radius(b, 20, 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(C_CARD3), 0);
+    lv_obj_set_style_bg_opa(b, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_shadow_width(b, 0, 0);
+    lv_obj_set_style_border_width(b, 0, 0);
+    lv_obj_t *ic = mkLabel(b, PAGE_ICONS[i], F_L, C_MUTED);
+    lv_obj_align(ic, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_t *cap = mkLabel(b, PAGE_NAMES[i], F_XS, C_MUTED);
+    lv_obj_align(cap, LV_ALIGN_BOTTOM_MID, 0, 2);
+    lv_obj_add_event_cb(b, onRail, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+  }
+  lblPageTitle = mkLabel(scr, "Home", F_L, C_TEXT);
+  lv_obj_set_pos(lblPageTitle, PAGE_X + 18, 14);
+  hdrClock = mkLabel(scr, "--:--", F_M, C_MUTED);
+  lv_obj_set_pos(hdrClock, 468, 20);
+  hdrTimer = textBtn(scr, 540, 10, 112, 44, "", F_S, C_CARD3, onTimerChip);
+  lv_obj_add_flag(hdrTimer, LV_OBJ_FLAG_HIDDEN);
+  hdrWifi = textBtn(scr, 660, 10, 60, 44, LV_SYMBOL_WIFI, F_M, C_CARD2, onWifiBtn);
+  lv_obj_t *mic = lv_button_create(scr);
+  lv_obj_set_pos(mic, 732, 4);
+  lv_obj_set_size(mic, 58, 58);
+  lv_obj_set_style_radius(mic, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(mic, lv_color_hex(C_ACCENT), 0);
+  lv_obj_set_style_bg_grad_color(mic, lv_color_hex(C_ACCENT2), 0);
+  lv_obj_set_style_bg_grad_dir(mic, LV_GRAD_DIR_VER, 0);
+  lv_obj_set_style_shadow_width(mic, 24, 0);
+  lv_obj_set_style_shadow_color(mic, lv_color_hex(C_ACCENT), 0);
+  lv_obj_set_style_shadow_opa(mic, LV_OPA_40, 0);
+  lv_obj_set_style_border_width(mic, 0, 0);
+  lv_obj_add_event_cb(mic, onMicBtn, LV_EVENT_CLICKED, nullptr);
+  drawMic(mic, 29, 27, 40, C_TEXT);
+  for (int i = 0; i < N_PAGES; i++) {
+    pages[i] = clearBox(scr, PAGE_X, PAGE_Y, PAGE_W, PAGE_H);
+    lv_obj_add_flag(pages[i], LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+// ───────────── home page ─────────────
+static void onHomeAsk(lv_event_t *) { onMicBtn(nullptr); }
+static void onHomeFrame(lv_event_t *) { ambientEnter(); }
+static void onHomeTimers(lv_event_t *) { showPage(PG_TIMERS); }
+static void onHomeNight(lv_event_t *) { ambientEnter(); }
+static void onHomeNextTap(lv_event_t *) { showPage(PG_AGENDA); }
+static void onHomeWxTap(lv_event_t *) { showPage(PG_WEATHER); }
+static void onHomeRadioTap(lv_event_t *) { showPage(PG_RADIO); }
+
+static void homeBuild(lv_obj_t *pg) {
+  lv_obj_t *cc = card(pg, 12, 4, 440, 200);
+  homeClock = mkLabel(cc, "--:--", F_CLK, C_TEXT);
+  lv_obj_align(homeClock, LV_ALIGN_TOP_MID, 0, 0);
+  homeDate = mkLabel(cc, "", F_M, C_MUTED);
+  lv_obj_align(homeDate, LV_ALIGN_BOTTOM_MID, 0, -14);
+
+  lv_obj_t *wc = card(pg, 464, 4, 236, 200);
+  lv_obj_add_event_cb(wc, onHomeWxTap, LV_EVENT_CLICKED, nullptr);
+  homeWxIcon = wxIcon(wc, 16, 16, 72, WX_PARTLY, false);
+  homeWxTemp = mkLabel(wc, "--", F_XL, C_TEXT);
+  lv_obj_set_pos(homeWxTemp, 100, 24);
+  homeWxCond = mkLabel(wc, "", F_S, C_TEXT);
+  lv_obj_set_width(homeWxCond, 210);
+  lv_label_set_long_mode(homeWxCond, LV_LABEL_LONG_DOT);
+  lv_obj_set_pos(homeWxCond, 16, 108);
+  homeWxHiLo = mkLabel(wc, "", F_S, C_MUTED);
+  lv_obj_set_pos(homeWxHiLo, 16, 140);
+  lv_obj_t *wp = mkLabel(wc, WEATHER_PLACE, F_XS, C_MUTED);
+  lv_obj_set_pos(wp, 16, 170);
+
+  lv_obj_t *nc = card(pg, 12, 212, 440, 92);
+  lv_obj_add_event_cb(nc, onHomeNextTap, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *ncap = mkLabel(nc, "NEXT UP", F_XS, C_ACCENT);
+  lv_obj_set_style_text_letter_space(ncap, 2, 0);
+  lv_obj_set_pos(ncap, 20, 12);
+  homeNextT = mkLabel(nc, "Nothing scheduled", F_M, C_TEXT);
+  lv_obj_set_width(homeNextT, 400);
+  lv_label_set_long_mode(homeNextT, LV_LABEL_LONG_DOT);
+  lv_obj_set_pos(homeNextT, 20, 34);
+  homeNextW = mkLabel(nc, "", F_S, C_MUTED);
+  lv_obj_set_pos(homeNextW, 20, 62);
+
+  lv_obj_t *rc = card(pg, 464, 212, 236, 92);
+  lv_obj_add_event_cb(rc, onHomeRadioTap, LV_EVENT_CLICKED, nullptr);
+  homeStation = mkLabel(rc, STATIONS[curStation].name, F_S, C_TEXT);
+  lv_obj_set_width(homeStation, 140);
+  lv_label_set_long_mode(homeStation, LV_LABEL_LONG_DOT);
+  lv_obj_set_pos(homeStation, 16, 18);
+  homeStat = mkLabel(rc, "", F_XS, C_MUTED);
+  lv_obj_set_width(homeStat, 140);
+  lv_label_set_long_mode(homeStat, LV_LABEL_LONG_DOT);
+  lv_obj_set_pos(homeStat, 16, 48);
+  lv_obj_t *pb = textBtn(rc, 160, 14, 64, 64, LV_SYMBOL_PLAY, F_M, C_ACCENT, onPlayPause);
+  homePlay = btnLabel(pb);
+
+  struct { const char *t; lv_event_cb_t cb; uint32_t col; } q[4] = {
+    {LV_SYMBOL_AUDIO "  Ask Crow", onHomeAsk, C_ACCENT}, {LV_SYMBOL_IMAGE "  Photo frame", onHomeFrame, C_CARD3},
+    {LV_SYMBOL_BELL "  Timers", onHomeTimers, C_CARD3}, {LV_SYMBOL_EYE_CLOSE "  Night clock", onHomeNight, C_CARD3}};
+  for (int i = 0; i < 4; i++) textBtn(pg, 12 + i * 174, 316, 166, 84, q[i].t, F_S, q[i].col, q[i].cb);
+}
+
+static void homeTick(bool newSecond) {
+  if (newSecond) {
+    struct tm t;
+    if (nowTm(&t)) {
+      char b[8]; snprintf(b, sizeof(b), "%02d:%02d", t.tm_hour, t.tm_min);
+      lv_label_set_text(homeClock, b); lv_label_set_text(hdrClock, b);
+      char d[40]; snprintf(d, sizeof(d), "%s %d %s", DOWF[t.tm_wday], t.tm_mday, MON3[t.tm_mon]);
+      lv_label_set_text(homeDate, d);
+    }
+  }
+  static uint32_t seenWx = 0, seenAg = 0;
+  if (wxVer != seenWx) {
+    seenWx = wxVer;
+    DATA_LOCK(); WxData w = wx; DATA_UNLOCK();
+    if (w.valid) {
+      wxDraw(homeWxIcon, wxKindOf(w.code), !w.day);
+      lv_label_set_text_fmt(homeWxTemp, "%d" "\xC2\xB0", w.temp);
+      lv_label_set_text(homeWxCond, wxText(w.code));
+      lv_label_set_text_fmt(homeWxHiLo, "H %d\xC2\xB0   L %d\xC2\xB0", w.days[0].hi, w.days[0].lo);
+    }
+  }
+  static time_t lastNextStart = -1;
+  Appt a; bool hasNext = agendaNext(a);
+  time_t key = hasNext ? a.start : 0;
+  if (agVer != seenAg || key != lastNextStart) {
+    seenAg = agVer; lastNextStart = key;
+    if (hasNext) { char w[48]; fmtWhen(a, w, sizeof(w)); lv_label_set_text(homeNextT, a.title); lv_label_set_text(homeNextW, w); }
+    else { lv_label_set_text(homeNextT, agendaConfigured ? "Nothing coming up" : "No calendar connected"); lv_label_set_text(homeNextW, agendaConfigured ? "Enjoy the quiet" : "See config.h"); }
+  }
+  lv_label_set_text(homeStation, STATIONS[curStation].name);
+  static const char *lastS = nullptr;
+  if (radioStatusText != lastS) { lastS = radioStatusText; lv_label_set_text(homeStat, radioStatusText); }
+  static bool lastIcon = true;
+  bool icon = (playState == 1 || playState == 2);
+  if (icon != lastIcon) { lastIcon = icon; lv_label_set_text(homePlay, icon ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY); }
+}
+
+// ───────────── more page (settings + tools) ─────────────
+static void onBright(lv_event_t *e) {
+  setBrightness(lv_slider_get_value(sldBright));
+  if (lv_event_get_code(e) == LV_EVENT_RELEASED) prefs.putUChar("bri", (uint8_t)brightPct);
+}
+static void onMoreFrame(lv_event_t *) { ambientEnter(); }
+static void onDoomsday(lv_event_t *) {
+  setBootMode(1);
+  showModal("Doomsday mode armed", "Power the hub OFF. Fit the SX1262 LoRa module, set switches S1 S0 to 01, then power on. The radio, mic and speaker share pins, so this is a separate mode.");
+}
+static void onRestart(lv_event_t *) { ESP.restart(); }
+
+static lv_obj_t *moreRow(lv_obj_t *col, int h) { return card(col, 0, 0, 688, h); }
+
+static void moreBuild(lv_obj_t *pg) {
+  lv_obj_t *col = scrollCol(pg, 12, 4, 688, 408, 10);
+  lv_obj_t *r = moreRow(col, 84);
+  mkLabel(r, LV_SYMBOL_EYE_OPEN "  Brightness", F_M, C_TEXT);
+  lv_obj_set_pos(lv_obj_get_child(r, 0), 20, 14);
+  sldBright = lv_slider_create(r);
+  lv_slider_set_range(sldBright, 10, 100);
+  lv_slider_set_value(sldBright, brightPct, LV_ANIM_OFF);
+  lv_obj_set_size(sldBright, 640, 14);
+  lv_obj_set_pos(sldBright, 24, 54);
+  lv_obj_set_style_bg_color(sldBright, lv_color_hex(C_CARD3), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(sldBright, lv_color_hex(C_ACCENT), LV_PART_INDICATOR);
+  lv_obj_set_style_bg_color(sldBright, lv_color_hex(C_TEXT), LV_PART_KNOB);
+  lv_obj_set_style_pad_all(sldBright, 12, LV_PART_KNOB);
+  lv_obj_add_event_cb(sldBright, onBright, LV_EVENT_VALUE_CHANGED, nullptr);
+  lv_obj_add_event_cb(sldBright, onBright, LV_EVENT_RELEASED, nullptr);
+
+  r = moreRow(col, 190);
+  mkLabel(r, LV_SYMBOL_UPLOAD "  Phone remote", F_M, C_TEXT);
+  lv_obj_set_pos(lv_obj_get_child(r, 0), 20, 14);
+  moreQr = lv_qrcode_create(r);
+  lv_qrcode_set_size(moreQr, 140);
+  lv_qrcode_set_dark_color(moreQr, lv_color_hex(0x000000));
+  lv_qrcode_set_light_color(moreQr, lv_color_hex(0xFFFFFF));
+  lv_obj_set_pos(moreQr, 20, 40);
+  lv_obj_set_style_border_color(moreQr, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_set_style_border_width(moreQr, 6, 0);
+  lv_qrcode_update(moreQr, "http://crowhub.local", 20);
+  moreUrl = mkLabel(r, "http://crowhub.local", F_S, C_ACCENT);
+  lv_obj_set_pos(moreUrl, 190, 50);
+  lv_obj_t *d = mkLabel(r, "Scan with your phone: control the radio, start timers,\nsend a message to this screen and upload photos\nfor the photo frame.", F_S, C_MUTED);
+  lv_obj_set_pos(d, 190, 84);
+
+  r = moreRow(col, 84);
+  moreWifiLbl = mkLabel(r, LV_SYMBOL_WIFI "  Wi-Fi", F_M, C_TEXT);
+  lv_obj_set_pos(moreWifiLbl, 20, 26);
+  textBtn(r, 500, 14, 170, 56, "Change", F_M, C_CARD3, onWifiBtn);
+
+  r = moreRow(col, 84);
+  morePhotos = mkLabel(r, LV_SYMBOL_IMAGE "  Photo frame", F_M, C_TEXT);
+  lv_obj_set_pos(morePhotos, 20, 26);
+  textBtn(r, 500, 14, 170, 56, "Start now", F_M, C_CARD3, onMoreFrame);
+
+  r = moreRow(col, 108);
+  mkLabel(r, LV_SYMBOL_WARNING "  Doomsday mode (LoRa mesh)", F_M, C_TEXT);
+  lv_obj_set_pos(lv_obj_get_child(r, 0), 20, 12);
+  lv_obj_t *dd = mkLabel(r, "Off-grid text messaging with other hubs. Needs the LoRa module\nand switches S1 S0 = 01 (radio shares pins with speaker).", F_XS, C_MUTED);
+  lv_obj_set_pos(dd, 20, 48);
+  textBtn(r, 500, 44, 170, 52, "Arm", F_S, C_CARD3, onDoomsday);
+
+  r = moreRow(col, 120);
+  moreSys = mkLabel(r, "", F_S, C_MUTED);
+  lv_obj_set_pos(moreSys, 20, 14);
+  textBtn(r, 500, 56, 170, 52, "Restart", F_S, C_CARD3, onRestart);
+}
+
+static void moreTick() {
+  if (curPage != PG_MORE) return;
+  char b[200];
+  snprintf(b, sizeof(b), "Free memory: %u KB internal, %u KB PSRAM\nUp %lu min    Flash photos: %d", (unsigned)(ESP.getFreeHeap() / 1024), (unsigned)(ESP.getFreePsram() / 1024), (unsigned long)(millis() / 60000), nPhotos);
+  lv_label_set_text(moreSys, b);
+  char w[80];
+  if (netState == NET_UP) snprintf(w, sizeof(w), LV_SYMBOL_WIFI "  %s  (%d dBm)", WiFi.SSID().c_str(), WiFi.RSSI()); else snprintf(w, sizeof(w), LV_SYMBOL_WIFI "  not connected");
+  char a[84]; copyAscii(a, sizeof(a), w);
+  lv_label_set_text(moreWifiLbl, a);
+  char p[60]; snprintf(p, sizeof(p), LV_SYMBOL_IMAGE "  Photo frame");
+  lv_label_set_text(morePhotos, p);
+}
+
+// ───────────── network worker ─────────────
+static void netTask(void *) {
+  uint32_t lastWx = 0, lastAg = 0, lastHa = 0;
+  for (;;) {
+    if (WiFi.status() == WL_CONNECTED && timeIsValid()) {
+      uint32_t now = millis();
+      if (reqWeather || !lastWx || now - lastWx > 20UL * 60000UL) { reqWeather = false; lastWx = now; if (!weatherFetch()) lastWx = now - 19UL * 60000UL; }
+      if (reqAgenda || !lastAg || now - lastAg > 15UL * 60000UL) { reqAgenda = false; lastAg = now; if (!agendaFetch() && agendaConfigured) lastAg = now - 14UL * 60000UL; }
+      if (HA_ENABLED && (reqHa || now - lastHa > (curPage == PG_HOUSE ? 4000UL : 30000UL))) { reqHa = false; lastHa = now; haPoll(); }
+      HaCall c;
+      while (haQ && xQueueReceive(haQ, &c, 0) == pdTRUE) haCallNow(c);
+    }
+    vTaskDelay(150);
+  }
+}
+
+// ───────────── 5 Hz UI tick ─────────────
+static void uiTick(lv_timer_t *) {
+  uint32_t now = millis();
+  // Wi-Fi state machine
+  if (scanning) {
+    int n = WiFi.scanComplete();
+    if (n >= 0) populateNetworks();
+    else if (n == WIFI_SCAN_FAILED) { scanning = false; lv_label_set_text(wifiStatus, "Scan failed - tap Scan"); }
+  }
+  if (netState == NET_BOOT) {
+    if (WiFi.status() == WL_CONNECTED) onWifiUp(AUTOPLAY_ON_BOOT);
+    else if (now - netT0 > 15000) showWifiScreen(false);
+  } else if (netState == NET_CONNECTING) {
+    if (WiFi.status() == WL_CONNECTED) { prefs.putString("ssid", selSSID); prefs.putString("pass", selPass); onWifiUp(true); }
+    else if (now - netT0 > 20000) {
+      netState = NET_NONE; WiFi.disconnect(true);
+      lv_label_set_text(wifiPwStatus, "Couldn't connect - check the password");
+      lv_obj_set_style_text_color(wifiPwStatus, lv_color_hex(C_BAD), 0);
+      lv_label_set_text(wifiStatus, "Couldn't connect - pick a network to try again");
+    }
+  }
+  if (ntpSynced) { ntpSynced = false; systemToRtc(); }
+  lv_obj_set_style_text_color(lv_obj_get_child(hdrWifi, 0), lv_color_hex(netState == NET_UP ? C_GOOD : C_BAD), 0);
+
+  // messages from worker tasks
+  UiMsg m;
+  while (uiQ && xQueueReceive(uiQ, &m, 0) == pdTRUE) {
+    if (m.type == UM_TOAST) uiToast(m.text, m.color);
+    else if (m.type == UM_VOICE_STATE) voiceUiState(m.text, m.color);
+    else if (m.type == UM_VOICE_RESULT) voiceUiResult(m.text, m.color);
+  }
+  voiceActions();
+  voiceUiTick();
+  if (toastUntil && (int32_t)(now - toastUntil) >= 0) { toastUntil = 0; lv_obj_add_flag(toastBox, LV_OBJ_FLAG_HIDDEN); }
+
+  radioTick(netState == NET_UP);
+  char chip[24];
+  bool anyTimer = timersTick(chip, sizeof(chip));
+  if (anyTimer) { lv_label_set_text(btnLabel(hdrTimer), chip); lv_obj_remove_flag(hdrTimer, LV_OBJ_FLAG_HIDDEN); } else lv_obj_add_flag(hdrTimer, LV_OBJ_FLAG_HIDDEN);
+  beepTick();
+  agendaTick();
+
+  // redraw data pages when new data landed
+  static uint32_t sw = 0, sa = 0, sh = 0;
+  if (wxVer != sw) { sw = wxVer; if (curPage == PG_WEATHER) weatherRefreshUi(); }
+  if (agVer != sa) { sa = agVer; if (curPage == PG_AGENDA) agendaRefreshUi(); }
+  if (haVer != sh) { sh = haVer; if (curPage == PG_HOUSE) houseRefreshUi(); }
+  static uint32_t lastSec = 0;
+  bool newSec = (now - lastSec) >= 1000;
+  if (newSec) lastSec = now;
+  homeTick(newSec);
+  moreTick();
+
+  // ambient mode: idle photo frame / clock, and the night clock
+  ambientTick();
+  if (ambientActive) return;
+  uint32_t idle = lv_display_get_inactive_time(disp);
+  bool mainShown = (lv_screen_active() == scrMainRef);
+  bool busy = voiceBusy || (alarmOv && !lv_obj_has_flag(alarmOv, LV_OBJ_FLAG_HIDDEN)) || !lv_obj_has_flag(modalOv, LV_OBJ_FLAG_HIDDEN);
+  if (mainShown && !busy) {
+#if AMBIENT_AFTER_MIN > 0
+    if (idle > (uint32_t)AMBIENT_AFTER_MIN * 60000UL) ambientEnter();
+#endif
+    if (isNight() && idle > 60000UL && timeIsValid()) ambientEnter();
+  }
+}
+
+// ───────────── setup / loop ─────────────
+void setup() {
+  Serial.begin(115200);
+  prefs.begin("crowhub", false);
+  bootMode   = prefs.getUChar("mode", 0);
+  curStation = constrain(prefs.getUChar("st", 0), 0, N_STATIONS - 1);
+  volume     = constrain(prefs.getUChar("vol", 10), 0, 21);
+  brightPct  = constrain(prefs.getUChar("bri", 100), 10, 100);
+  remoteTokenInit();
+  i2cMx = xSemaphoreCreateMutex();
+  dataMx = xSemaphoreCreateMutex();
+  uiQ = xQueueCreate(10, sizeof(UiMsg));
+  haQ = xQueueCreate(6, sizeof(HaCall));
+
+  Wire.begin(15, 16);
+  delay(50);
+  for (int i = 0; i < 20; i++) {                             // wait for the helper MCU + touch chip (as in Elecrow's lessons)
+    Wire.beginTransmission(0x30); bool a = Wire.endTransmission() == 0;
+    Wire.beginTransmission(0x5D); bool b = Wire.endTransmission() == 0;
+    if (a && b) break;
+    stc(STC_TOUCH_ON);
+    pinMode(1, OUTPUT); digitalWrite(1, LOW); delay(120); pinMode(1, INPUT); delay(100);
+  }
+  stc(STC_TOUCH_ON);
+  delay(100);
+  gfx.init();
+  gfx.initDMA();
+  gfx.startWrite();
+  gfx.fillScreen(TFT_BLACK);
+  setBrightness(brightPct);
+
+  lfsOk = LittleFS.begin(true);
+#if ENABLE_SD
+  sdMount();
+#endif
+  rtcToSystem();
+
+  lv_init();
+  lv_tick_set_cb(lvTick);
+  const uint32_t bufBytes = SCREEN_W * 30 * 2;
+  drawBuf1 = (uint8_t *)heap_caps_malloc(bufBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  drawBuf2 = (uint8_t *)heap_caps_malloc(bufBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  if (!drawBuf1 || !drawBuf2) { drawBuf1 = (uint8_t *)heap_caps_malloc(bufBytes, MALLOC_CAP_SPIRAM); drawBuf2 = (uint8_t *)heap_caps_malloc(bufBytes, MALLOC_CAP_SPIRAM); }
+  disp = lv_display_create(SCREEN_W, SCREEN_H);
+  lv_display_set_flush_cb(disp, dispFlush);
+  lv_display_set_buffers(disp, drawBuf1, drawBuf2, bufBytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
+  lv_indev_t *indev = lv_indev_create();
+  lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
+  lv_indev_set_read_cb(indev, touchRead);
+
+  if (bootMode == 1) {                                        // ── survival mesh: no Wi-Fi, no audio ──
+    loraBuild();
+    lv_screen_load(scrLora);
+    loraBegin();
+    lv_timer_create([](lv_timer_t *) { loraTick(); loraUiTick(); beepTick(); }, 200, nullptr);
+    return;
+  }
+
+  detectSwap();
+  audioBegin();
+  voiceBegin();
+
+  scrMainRef = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(scrMainRef, lv_color_hex(C_BG), 0);
+  lv_obj_remove_flag(scrMainRef, LV_OBJ_FLAG_SCROLLABLE);
+  buildChrome(scrMainRef);
+  homeBuild(pages[PG_HOME]);
+  radioBuild(pages[PG_RADIO]);
+  weatherBuild(pages[PG_WEATHER]);
+  agendaBuild(pages[PG_AGENDA]);
+  houseBuild(pages[PG_HOUSE]);
+  timersBuild(pages[PG_TIMERS]);
+  moreBuild(pages[PG_MORE]);
+  alarmBuild();
+  overlaysBuild();
+  voiceUiBuild();
+  buildWifi();
+  ambientBuild();
+  showPage(PG_HOME);
+  lv_screen_load(scrMainRef);
+  lv_timer_create(uiTick, 200, nullptr);
+
+  xTaskCreatePinnedToCore(netTask, "net", 20480, nullptr, 1, nullptr, 1);
+
+  String ssid = prefs.getString("ssid", "");
+  if (ssid.length()) {
+    selSSID = ssid; selPass = prefs.getString("pass", "");
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(selSSID.c_str(), selPass.c_str());
+    netState = NET_BOOT;
+    netT0 = millis();
+  } else {
+    showWifiScreen(false);
+  }
+}
+
+void loop() {
+  lv_timer_handler();
+  remoteTick();
+  delay(5);
+}
