@@ -10,7 +10,6 @@ public:
   lgfx::Bus_RGB _bus_instance;
   lgfx::Panel_RGB _panel_instance;
 //  lgfx::Light_PWM _light_instance;
-  lgfx::Touch_GT911 _touch_instance;
 
   LGFX(void) {
     {
@@ -76,25 +75,8 @@ public:
     _panel_instance.setBus(&_bus_instance);
 
 
-    {
-      auto cfg = _touch_instance.config();
-      cfg.x_min = 0;
-      cfg.x_max = 800;
-      cfg.y_min = 0;
-      cfg.y_max = 480;
-      cfg.pin_int = -1;
-      cfg.bus_shared = false;
-      cfg.offset_rotation = 0;
-      // I2C接続
-      cfg.i2c_port = I2C_NUM_0;
-      cfg.pin_sda = GPIO_NUM_15;
-      cfg.pin_scl = GPIO_NUM_16;
-      cfg.pin_rst = -1;
-      cfg.freq = 400000;
-      cfg.i2c_addr = 0x5D;  // 0x5D , 0x14
-      _touch_instance.config(cfg);
-      _panel_instance.setTouch(&_touch_instance);
-    }
+    // touch (GT911) is read through Wire in internetRadio.ino: a LovyanGFX touch driver would grab I2C port 0
+    // with its own driver and break Wire, which also talks to the backlight MCU.
 
     setPanel(&_panel_instance);
   }

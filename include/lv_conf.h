@@ -10,7 +10,7 @@
 
 #define LV_COLOR_DEPTH 16
 
-#define LV_USE_STDLIB_MALLOC    LV_STDLIB_CLIB
+#define LV_USE_STDLIB_MALLOC    LV_STDLIB_CUSTOM   /* lv_mem_psram.c: LVGL objects live in PSRAM, internal RAM stays free for Wi-Fi */
 
 #define LV_FONT_MONTSERRAT_14 1
 #define LV_FONT_MONTSERRAT_16 1

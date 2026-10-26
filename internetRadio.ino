@@ -84,13 +84,36 @@ static void dispFlush(lv_display_t *d, const lv_area_t *area, uint8_t *px) {
   gfx.pushImageDMA(area->x1, area->y1, lv_area_get_width(area), lv_area_get_height(area), (lgfx::rgb565_t *)px);
   lv_display_flush_ready(d);
 }
+// GT911 touch at 0x5D, read through Wire (status 0x814E: bit7 = data ready, low nibble = points; point 1 at 0x8150)
+#define GT911_ADDR 0x5D
+static bool gt911Read(uint16_t &x, uint16_t &y, bool &ready) {
+  uint8_t st = 0, p[4];
+  Wire.beginTransmission(GT911_ADDR); Wire.write(0x81); Wire.write(0x4E);
+  if (Wire.endTransmission(false) != 0 || Wire.requestFrom((uint8_t)GT911_ADDR, (uint8_t)1) != 1) { ready = false; return false; }
+  st = Wire.read();
+  ready = st & 0x80;
+  if (!ready) return false;
+  bool down = (st & 0x0F) > 0;
+  if (down) {
+    Wire.beginTransmission(GT911_ADDR); Wire.write(0x81); Wire.write(0x50); Wire.endTransmission(false);
+    if (Wire.requestFrom((uint8_t)GT911_ADDR, (uint8_t)4) == 4) {
+      for (int i = 0; i < 4; i++) p[i] = Wire.read();
+      x = p[0] | (p[1] << 8); y = p[2] | (p[3] << 8);
+    } else down = false;
+  }
+  Wire.beginTransmission(GT911_ADDR); Wire.write(0x81); Wire.write(0x4E); Wire.write(0); Wire.endTransmission();
+  return down;
+}
 static void touchRead(lv_indev_t *, lv_indev_data_t *data) {
-  uint16_t x, y;
+  static bool lastDown = false;
+  static uint16_t lx, ly;
+  uint16_t x, y; bool ready;
   xSemaphoreTake(i2cMx, portMAX_DELAY);
-  bool t = gfx.getTouch(&x, &y);
+  bool t = gt911Read(x, y, ready);
   xSemaphoreGive(i2cMx);
-  if (t) { data->state = LV_INDEV_STATE_PRESSED; data->point.x = x; data->point.y = y; }
-  else data->state = LV_INDEV_STATE_RELEASED;
+  if (ready) { lastDown = t; if (t) { lx = min<uint16_t>(x, SCREEN_W - 1); ly = min<uint16_t>(y, SCREEN_H - 1); } }
+  data->state = lastDown ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+  data->point.x = lx; data->point.y = ly;
 }
 
 static void setBrightness(int pct) {
@@ -661,9 +684,9 @@ void setup() {
   lv_init();
   lv_tick_set_cb(lvTick);
   const uint32_t bufBytes = SCREEN_W * 30 * 2;
-  drawBuf1 = (uint8_t *)heap_caps_malloc(bufBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  drawBuf2 = (uint8_t *)heap_caps_malloc(bufBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  if (!drawBuf1 || !drawBuf2) { drawBuf1 = (uint8_t *)heap_caps_malloc(bufBytes, MALLOC_CAP_SPIRAM); drawBuf2 = (uint8_t *)heap_caps_malloc(bufBytes, MALLOC_CAP_SPIRAM); }
+  // PSRAM: the panel's frame buffer is in PSRAM anyway, and internal RAM is needed for Wi-Fi + TLS
+  drawBuf1 = (uint8_t *)heap_caps_malloc(bufBytes, MALLOC_CAP_SPIRAM);
+  drawBuf2 = (uint8_t *)heap_caps_malloc(bufBytes, MALLOC_CAP_SPIRAM);
   disp = lv_display_create(SCREEN_W, SCREEN_H);
   lv_display_set_flush_cb(disp, dispFlush);
   lv_display_set_buffers(disp, drawBuf1, drawBuf2, bufBytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
@@ -705,6 +728,8 @@ void setup() {
 
   xTaskCreatePinnedToCore(netTask, "net", 20480, nullptr, 1, nullptr, 1);
 
+  Serial.printf("heap: internal %u free (largest %u), PSRAM %u free\n", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
   String ssid = prefs.getString("ssid", "");
   if (ssid.length()) {
     selSSID = ssid; selPass = prefs.getString("pass", "");
