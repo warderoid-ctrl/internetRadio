@@ -26,6 +26,7 @@
 #include <ArduinoJson.h>
 #include <RadioLib.h>
 #include <esp_sntp.h>
+#include <mbedtls/platform.h>
 #include <driver/gpio.h>
 #include <esp_rom_gpio.h>
 #include <soc/gpio_sig_map.h>
@@ -253,6 +254,8 @@ static void ntpCb(struct timeval *) { ntpSynced = true; }
 static void onWifiUp(bool autoplay) {
   netState = NET_UP;
   WiFi.setSleep(false);                                      // smoother streaming
+  Serial.printf("wifi up, heap: internal %u free (largest %u)\n", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
   sntp_set_time_sync_notification_cb(ntpCb);
   configTzTime(TZ_INFO, "pool.ntp.org", "time.google.com");
   remoteBegin();
@@ -645,8 +648,16 @@ static void uiTick(lv_timer_t *) {
 }
 
 // ───────────── setup / loop ─────────────
+// TLS buffers in PSRAM: the prebuilt core keeps them in internal RAM, where ~40 KB per connection doesn't fit
+// next to Wi-Fi and the task stacks.
+static void *tlsCalloc(size_t n, size_t sz) {
+  void *p = heap_caps_calloc(n, sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  return p ? p : calloc(n, sz);
+}
+
 void setup() {
   Serial.begin(115200);
+  mbedtls_platform_set_calloc_free(tlsCalloc, free);
   prefs.begin("crowhub", false);
   bootMode   = prefs.getUChar("mode", 0);
   curStation = constrain(prefs.getUChar("st", 0), 0, N_STATIONS - 1);
@@ -683,10 +694,13 @@ void setup() {
 
   lv_init();
   lv_tick_set_cb(lvTick);
-  const uint32_t bufBytes = SCREEN_W * 30 * 2;
-  // PSRAM: the panel's frame buffer is in PSRAM anyway, and internal RAM is needed for Wi-Fi + TLS
-  drawBuf1 = (uint8_t *)heap_caps_malloc(bufBytes, MALLOC_CAP_SPIRAM);
-  drawBuf2 = (uint8_t *)heap_caps_malloc(bufBytes, MALLOC_CAP_SPIRAM);
+  // One draw buffer in INTERNAL RAM. The RGB panel streams its frame buffer out of PSRAM non-stop; rendering into
+  // PSRAM as well starves it and the picture shakes / tears sideways. dispFlush copies synchronously, so a second
+  // buffer would buy nothing.
+  const uint32_t bufBytes = SCREEN_W * 24 * 2;
+  drawBuf1 = (uint8_t *)heap_caps_malloc(bufBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  if (!drawBuf1) drawBuf1 = (uint8_t *)heap_caps_malloc(bufBytes, MALLOC_CAP_SPIRAM);
+  drawBuf2 = nullptr;
   disp = lv_display_create(SCREEN_W, SCREEN_H);
   lv_display_set_flush_cb(disp, dispFlush);
   lv_display_set_buffers(disp, drawBuf1, drawBuf2, bufBytes, LV_DISPLAY_RENDER_MODE_PARTIAL);

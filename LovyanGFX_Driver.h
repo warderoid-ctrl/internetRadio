@@ -58,7 +58,7 @@ public:
       cfg.pin_vsync = GPIO_NUM_41;
       cfg.pin_hsync = GPIO_NUM_40;
       cfg.pin_pclk = GPIO_NUM_39;
-      cfg.freq_write = 16000000;
+      cfg.freq_write = 14000000;   // lower pixel clock = less PSRAM bandwidth for the panel DMA (less shake)
 
       cfg.hsync_polarity = 0;
       cfg.hsync_front_porch = 8;
