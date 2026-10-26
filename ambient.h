@@ -115,6 +115,48 @@ static bool pngDims(fs::FS &fsys, const char *path, int &w, int &h) {
   h = (b[20] << 24) | (b[21] << 16) | (b[22] << 8) | b[23];
   return true;
 }
+// Blurred backdrop for photos shown whole ("fit"): decode the photo tiny (cover-cropped), box-blur it, then stretch it
+// bilinearly over the screen and darken it. Pixels are in the sprite's byte order (sprSwap), like the rest of dst.
+#define BG_W (SCREEN_W / 8)
+#define BG_H (SCREEN_H / 8)
+static inline uint16_t sw16(uint16_t v) { return (uint16_t)((v >> 8) | (v << 8)); }
+static void blurBackdrop(uint16_t *dst, uint16_t *small) {
+  static uint8_t *work = nullptr;                              // r5 g6 b5 planes + scratch, in PSRAM (internal RAM is tight)
+  if (!work) work = (uint8_t *)heap_caps_malloc(4 * BG_W * BG_H, MALLOC_CAP_SPIRAM);
+  if (!work) { memset(dst, 0, SCREEN_W * SCREEN_H * 2); return; }
+  uint8_t *ch[3] = {work, work + BG_W * BG_H, work + 2 * BG_W * BG_H}, *tmp = work + 3 * BG_W * BG_H;
+  for (int i = 0; i < BG_W * BG_H; i++) {
+    uint16_t c = sprSwap ? sw16(small[i]) : small[i];
+    ch[0][i] = c >> 11; ch[1][i] = (c >> 5) & 63; ch[2][i] = c & 31;
+  }
+  for (int k = 0; k < 3; k++) for (int pass = 0; pass < 2; pass++) {   // separable 5-tap box blur, twice
+    uint8_t *p = ch[k];
+    for (int y = 0; y < BG_H; y++) for (int x = 0; x < BG_W; x++) {
+      int s = 0; for (int d = -2; d <= 2; d++) s += p[y * BG_W + std::min(std::max(x + d, 0), BG_W - 1)];
+      tmp[y * BG_W + x] = s / 5;
+    }
+    for (int y = 0; y < BG_H; y++) for (int x = 0; x < BG_W; x++) {
+      int s = 0; for (int d = -2; d <= 2; d++) s += tmp[std::min(std::max(y + d, 0), BG_H - 1) * BG_W + x];
+      p[y * BG_W + x] = s / 5;
+    }
+  }
+  for (int y = 0; y < SCREEN_H; y++) {                         // bilinear stretch x8, darkened to ~40 %
+    int fy = (y * (BG_H - 1) * 256) / (SCREEN_H - 1), y0 = fy >> 8, y1 = std::min(y0 + 1, BG_H - 1), wy = fy & 255;
+    for (int x = 0; x < SCREEN_W; x++) {
+      int fx = (x * (BG_W - 1) * 256) / (SCREEN_W - 1), x0 = fx >> 8, x1 = std::min(x0 + 1, BG_W - 1), wx = fx & 255;
+      int v[3];
+      for (int k = 0; k < 3; k++) {
+        const uint8_t *p = ch[k];
+        int top = p[y0 * BG_W + x0] * (256 - wx) + p[y0 * BG_W + x1] * wx;
+        int bot = p[y1 * BG_W + x0] * (256 - wx) + p[y1 * BG_W + x1] * wx;
+        v[k] = ((top * (256 - wy) + bot * wy) >> 16) * 2 / 5;
+      }
+      uint16_t c = (uint16_t)((v[0] << 11) | (v[1] << 5) | v[2]);
+      dst[y * SCREEN_W + x] = sprSwap ? sw16(c) : c;
+    }
+  }
+}
+
 // "cover" scale: fill the whole screen, trimming whichever edges overhang
 static float coverScale(int w, int h) {
   return (w > 0 && h > 0) ? std::max((float)SCREEN_W / w, (float)SCREEN_H / h) : 1.0f;
@@ -133,16 +175,34 @@ static bool decodeInto(uint16_t *dst, const PhotoRef &p, int &bw, int &bh) {
   int w = 0, h = 0;
   bool dims = isBmp ? false : isPng ? pngDims(fsys, p.path, w, h) : jpegDims(fsys, p.path, w, h);
   float sc = dims ? coverScale(w, h) : 1.0f;
-  // decoded size: the screen, grown in the overhanging direction (capped) when that's worth panning
   bw = SCREEN_W; bh = SCREEN_H;
+  bool fit = false;
   if (dims) {
     int sw = (int)(w * sc), sh = (int)(h * sc);
-    if (sw - SCREEN_W >= PAN_MIN_PX) bw = std::min(sw, PAN_MAX_W);
-    if (sh - SCREEN_H >= PAN_MIN_PX) bh = std::min(sh, PAN_MAX_H);
+    if (sw > PAN_MAX_W || sh > PAN_MAX_H) fit = true;           // too far off the screen's shape (portrait, panorama):
+    else {                                                     // show it whole on a blurred copy of itself
+      // close to the screen's shape: fill the screen and pan across the overhang, so all of it gets seen
+      if (sw - SCREEN_W >= PAN_MIN_PX) bw = sw;
+      if (sh - SCREEN_H >= PAN_MIN_PX) bh = sh;
+    }
   }
   photoSpr.setColorDepth(16);
+  if (fit) {
+    static uint16_t *small = nullptr;
+    if (!small) small = (uint16_t *)heap_caps_malloc(BG_W * BG_H * 2, MALLOC_CAP_SPIRAM);
+    if (!small) fit = false;
+    else {
+      float bs = std::max((float)BG_W / w, (float)BG_H / h);
+      photoSpr.setBuffer(small, BG_W, BG_H, 16);
+      photoSpr.fillScreen(TFT_BLACK);
+      if (isPng) photoSpr.drawPngFile(fsys, p.path, 0, 0, BG_W, BG_H, 0, 0, bs, bs, lgfx::datum_t::middle_center);
+      else photoSpr.drawJpgFile(fsys, p.path, 0, 0, BG_W, BG_H, 0, 0, bs, bs, lgfx::datum_t::middle_center);
+      blurBackdrop(dst, small);
+      sc = std::min((float)SCREEN_W / w, (float)SCREEN_H / h);   // whole photo on top
+    }
+  }
   photoSpr.setBuffer(dst, bw, bh, 16);
-  photoSpr.fillScreen(TFT_BLACK);
+  if (!fit) photoSpr.fillScreen(TFT_BLACK);
   // x/y is the top-left of a bw x bh box; middle_center centres the scaled image in it and the box clips the rest
   bool ok;
   if (isBmp) ok = photoSpr.drawBmpFile(fsys, p.path, 0, 0, bw, bh, 0, 0, 1.0f, 0.0f, lgfx::datum_t::middle_center);

@@ -1,7 +1,7 @@
 #pragma once
 // Phone remote + hooks for Home Assistant, served by the hub itself:  http://crowhub.local/?k=<token shown on the More page>
 //   - control the radio, start timers, put a message on the screen, make the hub speak
-//   - upload photos (resized in your phone's browser to 800x480) for the photo frame
+//   - upload photos (shrunk in your phone's browser, whole photo kept) for the photo frame
 //   - HA hook:  GET /notify?k=..&msg=Doorbell&say=1   -> banner + beeps (+ spoken) on the hub
 
 #if REMOTE_ENABLED
@@ -40,8 +40,9 @@ async function ph(){try{const d=await j('/api/photos');pc.textContent=d.photos.l
 pl.innerHTML=d.photos.map(n=>'<span onclick="del(\''+n+'\')"><img class=th src="/photo?n='+enc(n)+'&k='+K+'"></span>').join('')}catch(e){}}
 async function del(n){if(confirm('Delete this photo?')){await fetch('/photo/del?n='+enc(n)+'&k='+K);ph()}}
 async function up(files){let i=0;for(const file of files){us.textContent='Uploading '+(++i)+' of '+files.length+'...';
-const bm=await createImageBitmap(file);const cv=document.createElement('canvas');cv.width=800;cv.height=480;const x=cv.getContext('2d');
-const sc=Math.max(800/bm.width,480/bm.height),w=bm.width*sc,h=bm.height*sc;x.drawImage(bm,(800-w)/2,(480-h)/2,w,h);
+const bm=await createImageBitmap(file);const W=bm.width,H=bm.height;
+const sc=Math.min(1,Math.max(800/W,480/H),1600/Math.max(W,H));const cv=document.createElement('canvas');
+cv.width=Math.round(W*sc);cv.height=Math.round(H*sc);cv.getContext('2d').drawImage(bm,0,0,cv.width,cv.height);
 const b=await new Promise(r=>cv.toBlob(r,'image/jpeg',.85));const fd=new FormData();fd.append('file',b,'p'+Date.now()+'_'+i+'.jpg');
 await fetch('/upload?k='+K,{method:'POST',body:fd})}us.textContent='Done';ph()}
 s();ph();setInterval(s,5000)
