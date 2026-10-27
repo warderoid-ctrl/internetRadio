@@ -64,7 +64,9 @@ static const HaTile HA_TILES[] = {
 };
 
 // ───────────── calendars / appointments (optional) ─────────────
-// Option A (no Home Assistant needed): paste "secret iCal" links. Outlook: Calendar > Settings > Shared calendars
+// Option A (no Home Assistant needed): add "secret iCal" links on the phone remote (Calendars) - they are
+// kept on the hub. Links put here end up in git: only use this list for a calendar that is public anyway.
+// Where to find a link: Outlook: Calendar > Settings > Shared calendars
 // > Publish a calendar > ICS link.  Google: Calendar settings > "Secret address in iCal format".
 // Times are treated as UK local time (fine for a UK calendar).
 static const char *ICS_URLS[] = {

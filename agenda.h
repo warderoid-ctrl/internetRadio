@@ -8,10 +8,70 @@
 #define MAX_APPT 48
 
 struct Appt { time_t start, end; bool allDay; char title[64]; char loc[40]; };
-static Appt appts[MAX_APPT];
+static Appt *appts = nullptr;                                 // MAX_APPT each, PSRAM (12 KB is too much for internal RAM)
+static Appt *tmpA = nullptr;                                  // netTask builds the next list here
 static int nAppts = 0;
 static volatile bool reqAgenda = true;
 static bool agendaConfigured = false;
+
+// ── calendar links: pasted on the phone remote, kept in NVS (secret iCal links must never go into git) ──
+// config.h ICS_URLS still works as a fallback. The list is the UI task's; netTask copies it under DATA_LOCK.
+#define MAX_CAL 4
+#define CAL_LEN 512
+static char *calLinks = nullptr;                              // MAX_CAL x CAL_LEN, PSRAM
+static int nCal = 0;
+static void calKey(char *k, int i) { snprintf(k, 8, "ics%d", i); }
+static void calLoad() {                                       // after prefs.begin(); also allocates the appointment lists
+  appts = (Appt *)heap_caps_calloc(MAX_APPT, sizeof(Appt), MALLOC_CAP_SPIRAM);
+  tmpA = (Appt *)heap_caps_calloc(MAX_APPT, sizeof(Appt), MALLOC_CAP_SPIRAM);
+  calLinks = (char *)heap_caps_calloc(MAX_CAL, CAL_LEN, MALLOC_CAP_SPIRAM);
+  if (!calLinks) return;
+  nCal = 0;
+  for (int i = 0; i < MAX_CAL; i++) {
+    char k[8]; calKey(k, i);
+    if (!prefs.isKey(k)) continue;
+    String v = prefs.getString(k, "");
+    if (v.length() && v.length() < CAL_LEN) strlcpy(calLinks + CAL_LEN * nCal++, v.c_str(), CAL_LEN);
+  }
+}
+static void calSave() {
+  for (int i = 0; i < MAX_CAL; i++) {
+    char k[8]; calKey(k, i);
+    if (i < nCal) prefs.putString(k, calLinks + CAL_LEN * i); else if (prefs.isKey(k)) prefs.remove(k);
+  }
+}
+// add a link (webcal:// becomes https://); false if full / not a link
+static bool calAdd(const char *u) {
+  if (!calLinks) return false;
+  String s = String(u);
+  s.trim();
+  if (s.startsWith("webcal://")) s = "https://" + s.substring(9);
+  if (!s.startsWith("http") || s.length() >= CAL_LEN) return false;
+  DATA_LOCK();
+  bool ok = nCal < MAX_CAL;
+  if (ok) strlcpy(calLinks + CAL_LEN * nCal++, s.c_str(), CAL_LEN);
+  DATA_UNLOCK();
+  if (ok) { calSave(); reqAgenda = true; }
+  return ok;
+}
+static void calDel(int i) {
+  if (i < 0 || i >= nCal) return;
+  DATA_LOCK();
+  memmove(calLinks + CAL_LEN * i, calLinks + CAL_LEN * (i + 1), CAL_LEN * (nCal - i - 1));
+  nCal--;
+  DATA_UNLOCK();
+  calSave();
+  reqAgenda = true;
+}
+// for the phone: "calendar.google.com ... 3f9a.ics" (enough to tell links apart without echoing the secret)
+static void calLabel(int i, char *out, size_t n) {
+  const char *u = calLinks + CAL_LEN * i;
+  const char *h = strstr(u, "://"); h = h ? h + 3 : u;
+  const char *e = strchr(h, '/');
+  int hl = e ? (int)(e - h) : (int)strlen(h);
+  size_t ul = strlen(u);
+  snprintf(out, n, "%.*s ... %s", hl, h, ul > 8 ? u + ul - 8 : u);
+}
 
 // ── date maths (no timegm on the ESP32, so do it ourselves) ──
 static int64_t daysFromCivil(int y, int m, int d) {
@@ -66,7 +126,6 @@ static bool parseIso(const char *v, time_t &out, bool &allDay) {
 }
 
 // ── collecting events (keeps the earliest MAX_APPT) ──
-static Appt tmpA[MAX_APPT];
 static int tmpN = 0;
 static time_t winStart, winEnd;
 
@@ -257,6 +316,7 @@ static void haCalendarFetch(const char *entity) {
 }
 
 static bool agendaFetch() {
+  if (!appts || !tmpA) return false;
   time_t now = time(nullptr);
   struct tm l; localtime_r(&now, &l);
   l.tm_hour = 0; l.tm_min = 0; l.tm_sec = 0; l.tm_isdst = -1;
@@ -265,13 +325,20 @@ static bool agendaFetch() {
   winEnd = mktime(&l);
   tmpN = 0;
   bool any = false;
-  for (int i = 0; ICS_URLS[i]; i++) {
+  // the links from the phone (copied: they can change while we fetch), then any from config.h
+  char *links = (char *)heap_caps_malloc(MAX_CAL * CAL_LEN, MALLOC_CAP_SPIRAM);
+  int nl = 0;
+  if (links && calLinks) { DATA_LOCK(); nl = nCal; memcpy(links, calLinks, (size_t)nl * CAL_LEN); DATA_UNLOCK(); }
+  for (int i = 0; i < nl + 8; i++) {
+    const char *u = i < nl ? links + CAL_LEN * i : ICS_URLS[i - nl];
+    if (i >= nl && !u) break;
     any = true;
     IcsSink sink;
-    int code = httpStream(ICS_URLS[i], sink);
+    int code = httpStream(u, sink);
     sink.finish();
     Serial.printf("ICS %d -> HTTP %d (events so far %d)\n", i, code, tmpN);
   }
+  free(links);
   if (HA_URL[0] && HA_TOKEN[0]) for (int i = 0; HA_CALENDARS[i]; i++) { any = true; haCalendarFetch(HA_CALENDARS[i]); }
   agendaConfigured = any;
   if (!any) return false;
@@ -319,11 +386,13 @@ static void agendaRefreshUi() {
     lv_obj_t *c = card(agList, 0, 0, 688, 200);
     lv_obj_t *t = mkLabel(c, LV_SYMBOL_LIST "  No calendar connected yet", F_L, C_TEXT);
     lv_obj_set_pos(t, 24, 22);
-    lv_obj_t *d = mkLabel(c, "Open config.h and paste an iCal link into ICS_URLS\n(Outlook: Settings > Calendar > Shared calendars > Publish > ICS),\nor list Home Assistant calendar entities in HA_CALENDARS.", F_S, C_MUTED);
+    lv_obj_t *d = mkLabel(c, "Add one from your phone: More > Phone remote, scan the QR code,\nthen Calendars > paste your calendar's secret iCal link.\n(Google, Outlook and iCloud all have one - the phone page says where.)", F_S, C_MUTED);
     lv_obj_set_pos(d, 24, 78);
     return;
   }
-  Appt local[MAX_APPT]; int n;
+  static Appt *local = (Appt *)heap_caps_malloc(sizeof(Appt) * MAX_APPT, MALLOC_CAP_SPIRAM);   // too big for the UI stack
+  if (!local) return;
+  int n;
   DATA_LOCK(); n = nAppts; memcpy(local, appts, sizeof(Appt) * n); DATA_UNLOCK();
   if (n == 0) {
     lv_obj_t *c = card(agList, 0, 0, 688, 120);

@@ -384,6 +384,7 @@ void setup() {
   brightPct  = constrain(prefs.getUChar("bri", 100), 10, 100);
   remoteTokenInit();
   weatherLoadLocation();
+  calLoad();
   ambMode = prefs.getUChar("ssmode", 0) % 3;
   i2cMx = xSemaphoreCreateMutex();
   dataMx = xSemaphoreCreateMutex();
@@ -499,6 +500,8 @@ static void serialTick() {
       audioCmd(AC_SEEK, atoi(line + 5));
     } else if (!strcmp(line, "mic")) {                               // same as tapping the mic button
       voiceReq = true;
+    } else if (!strcmp(line, "remote")) {                            // the phone remote's address (with its token)
+      Serial.printf("remote: http://%s/?k=%s\n", WiFi.localIP().toString().c_str(), remoteToken.c_str());
     } else if (!strcmp(line, "pos")) {
       Serial.printf("pos %u / %u s, state %u\n", (unsigned)posSec, (unsigned)durSec, (unsigned)playState);
     }

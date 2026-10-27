@@ -84,7 +84,7 @@ static void homeTick(bool newSecond) {
   if (agVer != seenAg || key != lastNextStart) {
     seenAg = agVer; lastNextStart = key;
     if (hasNext) { char w[48]; fmtWhen(a, w, sizeof(w)); lv_label_set_text(homeNextT, a.title); lv_label_set_text(homeNextW, w); }
-    else { lv_label_set_text(homeNextT, agendaConfigured ? "Nothing coming up" : "No calendar connected"); lv_label_set_text(homeNextW, agendaConfigured ? "Enjoy the quiet" : "See config.h"); }
+    else { lv_label_set_text(homeNextT, agendaConfigured ? "Nothing coming up" : "No calendar connected"); lv_label_set_text(homeNextW, agendaConfigured ? "Enjoy the quiet" : "Add one from your phone (More)"); }
   }
   if (strcmp(lv_label_get_text(homeStation), curSt.name)) lv_label_set_text(homeStation, curSt.name);   // only on change: no redraw
   static const char *lastS = nullptr;

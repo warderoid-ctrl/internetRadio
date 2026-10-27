@@ -2,6 +2,7 @@
 // Phone remote + hooks for Home Assistant, served by the hub itself:  http://crowhub.local/?k=<token shown on the More page>
 //   - control the radio, start timers, put a message on the screen, make the hub speak
 //   - upload photos (shrunk in your phone's browser, whole photo kept) for the photo frame
+//   - see the agenda, add / remove calendar links (secret iCal links, kept on the hub only)
 //   - HA hook:  GET /notify?k=..&msg=Doorbell&say=1   -> banner + beeps (+ spoken) on the hub
 
 #if REMOTE_ENABLED
@@ -27,6 +28,12 @@ img.th{width:76px;height:46px;object-fit:cover;border-radius:8px;margin:3px}</st
 <div class=card><h2>TIMER</h2><div class=row><button onclick="c('timer&secs=180')">Tea 3</button><button onclick="c('timer&secs=360')">Egg 6</button><button onclick="c('timer&secs=600')">10 min</button><button onclick="c('timer&secs=1200')">20 min</button></div></div>
 <div class=card><h2>SAY / SHOW</h2><input type=text id=tx placeholder="Dinner's ready!"><div class=row>
 <button class=p onclick="c('msg&text='+enc(tx.value))">Show on screen</button><button onclick="c('say&text='+enc(tx.value))">Speak it</button></div></div>
+<div class=card><h2>AGENDA</h2><div id=agl class=m>Loading...</div></div>
+<div class=card><h2>CALENDARS</h2><div id=cl></div><input type=text id=cu placeholder="Paste a secret iCal link (https://... or webcal://...)">
+<div class=row><button class=p onclick="cadd()">Add calendar</button></div>
+<div class=m>Google: calendar settings &gt; Integrate calendar &gt; <b>Secret address in iCal format</b>.<br>
+Outlook: Settings &gt; Calendar &gt; Shared calendars &gt; Publish &gt; <b>ICS</b> link.<br>
+iCloud: share the calendar &gt; <b>Public Calendar</b> &gt; copy link.<br>Kept on the hub only - not in the code.</div></div>
 <div class=card><h2>PHOTO FRAME</h2><div class=m id=pc></div><div id=pl></div>
 <input type=file id=f accept="image/*" multiple style="display:none" onchange="up(this.files)"><div class=row>
 <button class=p onclick="f.click()">Add photos</button><button onclick="c('ambient')">Start frame</button></div><div class=m id=us></div></div>
@@ -45,7 +52,12 @@ const sc=Math.min(1,Math.max(800/W,480/H),1600/Math.max(W,H));const cv=document.
 cv.width=Math.round(W*sc);cv.height=Math.round(H*sc);cv.getContext('2d').drawImage(bm,0,0,cv.width,cv.height);
 const b=await new Promise(r=>cv.toBlob(r,'image/jpeg',.85));const fd=new FormData();fd.append('file',b,'p'+Date.now()+'_'+i+'.jpg');
 await fetch('/upload?k='+K,{method:'POST',body:fd})}us.textContent='Done';ph()}
-s();ph();setInterval(s,5000)
+async function ag(){try{const d=await j('/api/agenda');agl.innerHTML=d.cal?(d.items.length?d.items.map(a=>'<div style="margin:8px 0"><b>'+esc(a.t)+'</b><br>'+esc(a.w)+(a.l?' - '+esc(a.l):'')+'</div>').join(''):'Nothing in the next two weeks'):'No calendar yet - add one below';
+cl.innerHTML=d.links.map((n,i)=>'<div class=row style="align-items:center"><span class=m style="flex:1">'+esc(n)+'</span><button onclick="cdel('+i+')">Remove</button></div>').join('')}catch(e){}}
+function esc(t){return String(t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+async function cadd(){if(!cu.value)return;const r=await j('/api/cal/add?u='+enc(cu.value));if(!r.ok)alert(r.err||'Could not add');cu.value='';setTimeout(ag,300);setTimeout(ag,8000)}
+async function cdel(i){if(confirm('Remove this calendar?')){await j('/api/cal/del?i='+i);setTimeout(ag,300)}}
+s();ph();ag();setInterval(s,5000);setInterval(ag,60000)
 </script></body></html>)HTML";
 
 static String remoteToken;   // random per device, generated on first boot and kept in NVS
@@ -135,6 +147,37 @@ static void hUpload() {
   }
 }
 
+static void hAgenda() {                                       // upcoming appointments + the calendar links (masked)
+  if (!authed()) return deny();
+  static Appt *local = (Appt *)heap_caps_malloc(sizeof(Appt) * MAX_APPT, MALLOC_CAP_SPIRAM);
+  int n = 0;
+  if (local) { DATA_LOCK(); n = nAppts; memcpy(local, appts, sizeof(Appt) * n); DATA_UNLOCK(); }
+  time_t now = time(nullptr);
+  String o = "{\"cal\":" + String(agendaConfigured || nCal ? "true" : "false") + ",\"items\":[";
+  bool first = true;
+  for (int i = 0; i < n; i++) {
+    if (local[i].end < now) continue;
+    char w[48]; fmtWhen(local[i], w, sizeof(w));
+    if (!first) o += ",";
+    first = false;
+    o += "{\"t\":\"" + jsonEsc(local[i].title) + "\",\"w\":\"" + jsonEsc(w) + "\",\"l\":\"" + jsonEsc(local[i].loc) + "\"}";
+  }
+  o += "],\"links\":[";
+  for (int i = 0; i < nCal; i++) { char l[96]; calLabel(i, l, sizeof(l)); if (i) o += ","; o += "\"" + jsonEsc(l) + "\""; }
+  o += "]}";
+  server.send(200, "application/json", o);
+}
+static void hCalAdd() {
+  if (!authed()) return deny();
+  bool ok = calAdd(server.arg("u").c_str());
+  server.send(200, "application/json", ok ? "{\"ok\":true}" : (nCal >= MAX_CAL ? "{\"ok\":false,\"err\":\"Up to 4 calendars\"}" : "{\"ok\":false,\"err\":\"That doesn't look like a calendar link\"}"));
+}
+static void hCalDel() {
+  if (!authed()) return deny();
+  calDel(server.arg("i").toInt());
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
 static bool remoteStarted = false;
 static void remoteBegin() {
   if (remoteStarted) return;
@@ -144,6 +187,9 @@ static void remoteBegin() {
   server.on("/api/state", HTTP_GET, hState);
   server.on("/api/cmd", HTTP_GET, hCmd);
   server.on("/api/photos", HTTP_GET, hPhotos);
+  server.on("/api/agenda", HTTP_GET, hAgenda);
+  server.on("/api/cal/add", HTTP_GET, hCalAdd);
+  server.on("/api/cal/del", HTTP_GET, hCalDel);
   server.on("/notify", HTTP_ANY, hNotify);
   server.on("/photo", HTTP_GET, hPhotoGet);
   server.on("/photo/del", HTTP_GET, hPhotoDel);
