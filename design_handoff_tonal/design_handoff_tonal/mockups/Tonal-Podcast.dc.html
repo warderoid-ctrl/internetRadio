@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tonal podcast</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&amp;family=Inter:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#EDE6DD}a:hover{color:#fff}
+</style>
+</helmet>
+<div style="width: 800px; height: 480px; box-sizing: border-box; background: #15120E; color: #EDE6DD; font-family: Inter, system-ui, sans-serif; padding: 20px 24px; display: grid; grid-template-columns: 1fr 300px; gap: 12px; overflow: hidden">
+
+  <div style="background: #221E19; border-radius: 36px; padding: 20px; display: flex; flex-direction: column; gap: 16px; min-height: 0">
+    <div style="display: flex; align-items: center; gap: 10px">
+      <a href="Tonal-Home.dc.html" aria-label="Back" style="width: 48px; height: 48px; border-radius: 24px; background: #2E2923; display: flex; align-items: center; justify-content: center; color: #EDE6DD"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg></a>
+      <span style="font-size: 15px; font-weight: 600; color: #B3A99D">Podcasts</span>
+    </div>
+
+    <div style="display: flex; gap: 20px; align-items: center">
+      <div style="width: 148px; height: 148px; border-radius: 44px; background: #D9C2FF; color: #2A1050; display: flex; flex-direction: column; justify-content: space-between; padding: 18px; box-sizing: border-box; flex-shrink: 0">
+        <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17v4"></path><path d="M18 11a6 6 0 00-3-5.197"></path><path d="M2 11a10 10 0 015-8.662"></path><path d="M22 11a10 10 0 00-5-8.662"></path><path d="M6 11a6 6 0 013-5.197"></path><path d="M9 21h6"></path><rect x="10" y="9" width="4" height="8" rx="2"></rect></svg>
+        <span style="font-family: 'Inter Tight', sans-serif; font-weight: 700; font-size: 26px; letter-spacing: -0.03em; line-height: 1">Benji B</span>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 6px; min-width: 0">
+        <span style="font-size: 14px; color: #B3A99D; font-weight: 500">Benji B · weekly show</span>
+        <span style="font-family: 'Inter Tight', sans-serif; font-weight: 600; font-size: 34px; line-height: 1.05; letter-spacing: -0.02em">[Episode title]</span>
+        <span style="font-size: 14px; color: #B3A99D">Published 24 Oct · 1 h 58 min</span>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 8px; margin-top: auto">
+      <div style="position: relative; height: 16px; display: flex; align-items: center">
+        <div style="flex: 1; height: 8px; border-radius: 4px; background: #3D352C"></div>
+        <div style="position: absolute; left: 0; width: 38%; height: 8px; border-radius: 4px; background: {{primary}}"></div>
+        <div style="position: absolute; left: calc(38% - 3px); width: 6px; height: 28px; border-radius: 3px; background: {{primary}}"></div>
+      </div>
+      <div style="display: flex; justify-content: space-between; font-size: 13px; color: #B3A99D; font-variant-numeric: tabular-nums"><span>44:51</span><span>−1:13:09</span></div>
+    </div>
+
+    <div style="display: flex; gap: 8px; align-items: center">
+      <button aria-label="Back 15 seconds" style="height: 64px; padding: 0 20px; border-radius: 32px; border: 0; background: #2E2923; color: #EDE6DD; font: 600 16px Inter, sans-serif; display: flex; align-items: center; gap: 8px; cursor: pointer"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.971 4.285A2 2 0 0 1 21 6v12a2 2 0 0 1-3.029 1.715l-9.997-5.998a2 2 0 0 1-.003-3.432z"></path><path d="M3 20V4"></path></svg>15</button>
+      <button aria-label="Pause" style="flex: 1; height: 64px; border-radius: 22px; border: 0; background: {{primary}}; color: #3A1305; display: flex; align-items: center; justify-content: center; gap: 10px; font: 600 17px Inter, sans-serif; cursor: pointer"><svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="14" y="3" width="5" height="18" rx="1"></rect><rect x="5" y="3" width="5" height="18" rx="1"></rect></svg>Pause</button>
+      <button aria-label="Forward 30 seconds" style="height: 64px; padding: 0 20px; border-radius: 32px; border: 0; background: #2E2923; color: #EDE6DD; font: 600 16px Inter, sans-serif; display: flex; align-items: center; gap: 8px; cursor: pointer">30<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 4v16"></path><path d="M6.029 4.285A2 2 0 0 0 3 6v12a2 2 0 0 0 3.029 1.715l9.997-5.998a2 2 0 0 0 .003-3.432z"></path></svg></button>
+      <button aria-label="Sleep timer" style="width: 64px; height: 64px; border-radius: 32px; border: 0; background: #2E2923; color: #EDE6DD; display: flex; align-items: center; justify-content: center; cursor: pointer"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"></path></svg></button>
+    </div>
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 8px; min-height: 0">
+    <div style="display: flex; gap: 6px">
+      <button style="height: 44px; padding: 0 16px; border-radius: 22px; border: 0; background: #D9C2FF; color: #2A1050; font: 600 14px Inter, sans-serif; cursor: pointer">Benji B</button>
+      <button style="height: 44px; padding: 0 16px; border-radius: 22px; border: 1px solid #4A4239; background: transparent; color: #EDE6DD; font: 600 14px Inter, sans-serif; cursor: pointer">The Lot Radio</button>
+    </div>
+    <div style="flex: 1; background: #221E19; border-radius: 28px; padding: 8px; display: flex; flex-direction: column; gap: 4px; min-height: 0">
+      <button style="min-height: 68px; border-radius: 20px; border: 0; background: #3D352C; color: #EDE6DD; text-align: left; padding: 10px 14px; display: flex; flex-direction: column; justify-content: center; gap: 4px; cursor: pointer; font-family: Inter, sans-serif">
+        <span style="font-size: 15px; font-weight: 600">[Episode title]</span>
+        <span style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: #B3A99D">24 Oct · <span style="width: 40px; height: 4px; border-radius: 2px; background: #4A4239; display: inline-flex"><span style="width: 38%; height: 4px; border-radius: 2px; background: {{primary}}"></span></span> 1 h 13 left</span>
+      </button>
+      <button style="min-height: 68px; border-radius: 20px; border: 0; background: transparent; color: #EDE6DD; text-align: left; padding: 10px 14px; display: flex; flex-direction: column; justify-content: center; gap: 4px; cursor: pointer; font-family: Inter, sans-serif">
+        <span style="font-size: 15px; font-weight: 600">[Episode title]</span>
+        <span style="font-size: 12px; color: #B3A99D">17 Oct · 2 h 00 min</span>
+      </button>
+      <button style="min-height: 68px; border-radius: 20px; border: 0; background: transparent; color: #EDE6DD; text-align: left; padding: 10px 14px; display: flex; flex-direction: column; justify-content: center; gap: 4px; cursor: pointer; font-family: Inter, sans-serif">
+        <span style="font-size: 15px; font-weight: 600">[Episode title]</span>
+        <span style="font-size: 12px; color: #B3A99D">10 Oct · 1 h 57 min</span>
+      </button>
+      <button style="min-height: 68px; border-radius: 20px; border: 0; background: transparent; color: #EDE6DD; text-align: left; padding: 10px 14px; display: flex; flex-direction: column; justify-content: center; gap: 4px; cursor: pointer; font-family: Inter, sans-serif">
+        <span style="font-size: 15px; font-weight: 600">[Episode title]</span>
+        <span style="font-size: 12px; color: #B3A99D">3 Oct · Played</span>
+      </button>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"primary":{"editor":"color","default":"#FFB59A","options":["#FFB59A","#D9C2FF","#A9DBBC","#F3D77E"]},"$preview":{"width":800,"height":480}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { primary: this.props.primary ?? '#FFB59A' };
+  }
+}
+</script>
+</body>
+</html>

@@ -16,7 +16,6 @@
 #include <FS.h>            // file systems before LovyanGFX, or its drawJpgFile(fs, ...) overloads aren't built
 #include <LittleFS.h>
 #include <SD.h>
-#include "pins_config.h"
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>   // only for decoding images (photos, logos) into sprites; the panel is driven by esp_lcd
 #include <esp_lcd_panel_rgb.h>

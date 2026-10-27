@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Night clock</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&amp;family=Geist+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+
+</style>
+</helmet>
+<div style="width: 800px; height: 480px; box-sizing: border-box; background: #000; color: {{night}}; font-family: Geist, system-ui, sans-serif; padding: 28px 32px; display: grid; grid-template-columns: 1fr 200px; gap: 28px; overflow: hidden">
+
+  <div style="display: flex; flex-direction: column; justify-content: center; gap: 10px">
+    <div style="font-family: 'Geist Mono', monospace; font-size: 15px; letter-spacing: 0.08em">TUE 27 OCT</div>
+    <div style="font-size: 236px; font-weight: 300; letter-spacing: -0.07em; line-height: 0.8; font-variant-numeric: tabular-nums; margin-left: -10px">00:41</div>
+  </div>
+
+  <div style="display: flex; flex-direction: column; justify-content: center; gap: 12px">
+    <div style="border: 1px solid #2A0B06; border-radius: 26px; padding: 16px; display: flex; flex-direction: column; gap: 8px">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"></path></svg>
+      <span style="font-size: 30px; font-weight: 400; letter-spacing: -0.03em">23 min</span>
+      <span style="font-size: 13px">Radio sleep · Groove Salad</span>
+    </div>
+    <div style="border: 1px solid #2A0B06; border-radius: 26px; padding: 16px; display: flex; flex-direction: column; gap: 8px">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"></path></svg>
+      <span style="font-size: 30px; font-weight: 400; letter-spacing: -0.03em">6°</span>
+      <span style="font-size: 13px">Clear by 06:00</span>
+    </div>
+    <div style="font-family: 'Geist Mono', monospace; font-size: 12px; text-align: center; letter-spacing: 0.06em">TAP TO WAKE</div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"night":{"editor":"color","default":"#E0503A","options":["#E0503A","#8C6A3A","#5A5A5A"]},"$preview":{"width":800,"height":480}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { night: this.props.night ?? '#E0503A' };
+  }
+}
+</script>
+</body>
+</html>

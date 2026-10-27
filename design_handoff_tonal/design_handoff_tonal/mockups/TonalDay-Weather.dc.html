@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tonal daylight weather</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&amp;family=Inter:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#121212}a:hover{color:#000}
+</style>
+</helmet>
+<div style="width: 800px; height: 480px; box-sizing: border-box; background: #EFEEE9; color: #121212; font-family: Inter, system-ui, sans-serif; padding: 20px 24px; display: grid; grid-template-columns: 330px 1fr; gap: 12px; overflow: hidden">
+
+  <div style="background: #121212; color: #fff; border-radius: 36px; padding: 20px 22px; display: flex; flex-direction: column; justify-content: space-between">
+    <div style="display: flex; justify-content: space-between; align-items: center">
+      <a href="TonalDay-Home.dc.html" aria-label="Back" style="width: 48px; height: 48px; border-radius: 24px; background: rgba(255,255,255,0.12); display: flex; align-items: center; justify-content: center; color: #fff"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg></a>
+      <span style="font-size: 14px; font-weight: 600">[Your town]</span>
+    </div>
+    <div style="display: flex; align-items: flex-end; justify-content: space-between">
+      <div>
+        <div style="font-family: 'Inter Tight', sans-serif; font-weight: 600; font-size: 112px; line-height: 0.85; letter-spacing: -0.06em">11°</div>
+        <div style="font-size: 18px; font-weight: 600; margin-top: 10px">Light rain</div>
+        <div style="font-size: 14px; color: #B5B4AE">Feels like 8°</div>
+      </div>
+      <svg width="72" height="72" viewBox="0 0 24 24" fill="none" stroke="{{primary}}" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"></path><path d="M16 14v6"></path><path d="M8 14v6"></path><path d="M12 16v6"></path></svg>
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px">
+      <div style="background: rgba(255,255,255,0.12); border-radius: 20px; padding: 10px 12px; display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.8 19.6A2 2 0 1 0 14 16H2"></path><path d="M17.5 8a2.5 2.5 0 1 1 2 4H2"></path><path d="M9.8 4.4A2 2 0 1 1 11 8H2"></path></svg>14 mph SW</div>
+      <div style="background: rgba(255,255,255,0.12); border-radius: 20px; padding: 10px 12px; display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 13v7a2 2 0 0 0 4 0"></path><path d="M12 2v2"></path><path d="M20.992 13a1 1 0 0 0 .97-1.274 10.284 10.284 0 0 0-19.923 0A1 1 0 0 0 3 13z"></path></svg>80% rain</div>
+      <div style="background: rgba(255,255,255,0.12); border-radius: 20px; padding: 10px 12px; display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 16.3c2.2 0 4-1.83 4-4.050 0-1.16-.57-2.26-1.71-3.19S7.29 6.75 7 5.3c-.29 1.45-1.14 2.84-2.29 3.760S3 11.1 3 12.25c0 2.22 1.8 4.05 4 4.05z"></path><path d="M12.56 6.6A10.97 10.97 0 0 0 14 3.02c.5 2.5 2 4.9 4 6.5s3 3.5 3 5.5a6.98 6.98 0 0 1-11.91 4.97"></path></svg>87% humid</div>
+      <div style="background: rgba(255,255,255,0.12); border-radius: 20px; padding: 10px 12px; display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v8"></path><path d="m4.93 10.93 1.41 1.41"></path><path d="M2 18h2"></path><path d="M20 18h2"></path><path d="m19.07 10.93-1.41 1.41"></path><path d="M22 22H2"></path><path d="m8 6 4-4 4 4"></path><path d="M16 18a4 4 0 0 0-8 0"></path></svg>06:58 / 16:41</div>
+    </div>
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 12px; min-height: 0">
+    <div style="background: #fff; border-radius: 32px; padding: 16px 18px; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px">
+      <sc-for list="{{hours}}" as="h" hint-placeholder-count="6">
+        <div style="{{h.style}}">
+          <span style="font-size: 13px; font-weight: 600">{{h.t}}</span>
+          <span style="font-family: 'Inter Tight', sans-serif; font-size: 24px; font-weight: 600">{{h.temp}}</span>
+          <span style="font-size: 12px">{{h.rain}}</span>
+        </div>
+      </sc-for>
+    </div>
+
+    <div style="flex: 1; background: #fff; border-radius: 32px; padding: 10px 18px; display: flex; flex-direction: column; justify-content: space-around; min-height: 0">
+      <sc-for list="{{days}}" as="d" hint-placeholder-count="5">
+        <div style="display: flex; align-items: center; gap: 14px; height: 40px">
+          <span style="width: 44px; font-size: 15px; font-weight: 600">{{d.day}}</span>
+          <span style="width: 70px; font-size: 13px; color: #6B6A65">{{d.desc}}</span>
+          <span style="width: 30px; text-align: right; font-size: 15px; color: #6B6A65; font-variant-numeric: tabular-nums">{{d.lo}}</span>
+          <span style="flex: 1; height: 10px; border-radius: 5px; background: #EFEEE9; position: relative">
+            <span style="{{d.bar}}"></span>
+          </span>
+          <span style="width: 30px; font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums">{{d.hi}}</span>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"primary":{"editor":"color","default":"#FF6B3D","options":["#FF6B3D","#FFC145","#5CB8FF","#3DDC97"]},"$preview":{"width":800,"height":480}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const primary = this.props.primary ?? '#FF6B3D';
+    const hrs = [['Now', '11°', '80%'], ['09', '11°', '70%'], ['10', '12°', '40%'], ['11', '13°', '20%'], ['12', '13°', '10%'], ['13', '12°', '10%']];
+    const hours = hrs.map(([t, temp, rain], i) => ({
+      t, temp, rain,
+      style: 'display:flex;flex-direction:column;align-items:center;gap:4px;padding:10px 0;border-radius:22px;color:#121212;' + (i === 0 ? 'background:' + primary : '')
+    }));
+    const d = [['Today', 'Rain', 7, 13], ['Wed', 'Cloudy', 6, 12], ['Thu', 'Sunny', 4, 14], ['Fri', 'Showers', 8, 13], ['Sat', 'Windy', 9, 15]];
+    const min = 3, max = 16, span = max - min;
+    const days = d.map(([day, desc, lo, hi]) => ({
+      day, desc, lo: lo + '°', hi: hi + '°',
+      bar: 'position:absolute;top:0;bottom:0;border-radius:5px;background:' + primary + ';left:' + ((lo - min) / span * 100) + '%;width:' + ((hi - lo) / span * 100) + '%'
+    }));
+    return { hours, days };
+  }
+}
+</script>
+</body>
+</html>
