@@ -87,8 +87,8 @@ static void loraHandleRx() {
   if (wasSeen(id)) return;
   markSeen(id);
   loraRx++;
-  char who[12]; copyAscii(who, sizeof(who), f[2]);
-  char text[110]; copyAscii(text, sizeof(text), f[3]);
+  char who[12]; copyText(who, sizeof(who), f[2]);
+  char text[110]; copyText(text, sizeof(text), f[3]);
   touchNode(who, (int)loraRssi);
   if (strcmp(text, "BEACON")) { loraLogAdd(who, text, false, (int)loraRssi); beep(2); }
   if (ttl > 0) {                                              // repeat it, after a random pause so repeaters don't collide
@@ -112,7 +112,7 @@ static void loraLogAdd(const char *who, const char *text, bool mine, int rssi) {
   if (!loraLog) return;
   struct tm t; char hm[8] = "--:--";
   if (nowTm(&t)) snprintf(hm, sizeof(hm), "%02d:%02d", t.tm_hour, t.tm_min);
-  lv_obj_t *r = panel(loraLog, 0, 0, 484, 56, mine ? C_CARD3 : C_CARD2, 14);
+  lv_obj_t *r = panel(loraLog, 0, 0, 484, 56, mine ? T->selected : T->surfaceHi, T_R_ROW);
   lv_obj_t *a = mkLabel(r, hm, F_XS, C_MUTED); lv_obj_set_pos(a, 10, 6);
   char meta[40]; if (mine) snprintf(meta, sizeof(meta), "%s (you)", who); else snprintf(meta, sizeof(meta), "%s  %d dBm", who, rssi);
   lv_obj_t *b = mkLabel(r, meta, F_XS, mine ? C_ACCENT : C_GOOD); lv_obj_set_pos(b, 60, 6);
@@ -141,9 +141,9 @@ static void loraBuild() {
   scrLora = lv_obj_create(NULL);
   lv_obj_set_style_bg_color(scrLora, lv_color_hex(C_BG), 0);
   lv_obj_remove_flag(scrLora, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_t *t = mkLabel(scrLora, LV_SYMBOL_WIFI "  SURVIVAL MESH", F_L, C_GOOD);
-  lv_obj_set_pos(t, 16, 12);
-  loraClock = mkLabel(scrLora, "--:--", F_L, C_TEXT);
+  lv_obj_t *t = mkLabel(scrLora, LUCIDE_SATELLITE_DISH "  Survival mesh", I_24, C_GOOD);
+  lv_obj_set_pos(t, 16, 14);
+  loraClock = mkLabel(scrLora, "--:--", F_T26, C_TEXT);
   lv_obj_align(loraClock, LV_ALIGN_TOP_RIGHT, -20, 12);
 
   lv_obj_t *lc = card(scrLora, 12, 60, 508, 300);
@@ -157,28 +157,16 @@ static void loraBuild() {
   lv_obj_set_width(loraNodesLbl, 230); lv_obj_set_pos(loraNodesLbl, 14, 32);
 
   const char *Q[] = {"I'm OK", "Need help", "Meet at base", "Have water", "Have food", "All clear"};
-  for (int i = 0; i < 6; i++) textBtn(scrLora, 12 + (i % 3) * 176, 370 + (i / 3) * 56, 168, 48, Q[i], F_S, i == 1 ? C_BAD : C_CARD3, onQuick, (void *)(intptr_t)i);
-  textBtn(scrLora, 540, 370, 118, 48, "Type...", F_S, C_ACCENT, onType);
-  lv_obj_t *bb = textBtn(scrLora, 664, 370, 124, 48, "Beacon: ON", F_S, C_CARD3, onBeacon);
+  for (int i = 0; i < 6; i++) textBtn(scrLora, 12 + (i % 3) * 176, 370 + (i / 3) * 56, 168, 48, Q[i], F_M, i == 1 ? C_BAD : T->surfaceHi, onQuick, (void *)(intptr_t)i);
+  textBtn(scrLora, 540, 370, 118, 48, "Type...", F_M, T->primary, onType);
+  lv_obj_t *bb = textBtn(scrLora, 664, 370, 124, 48, "Beacon: ON", F_M, T->surfaceHi, onBeacon);
   loraBeaconLbl = btnLabel(bb);
-  textBtn(scrLora, 540, 426, 248, 48, "Back to hub mode", F_S, C_CARD2, onExitHub);
+  textBtn(scrLora, 540, 426, 248, 48, "Back to hub mode", F_M, T->surfaceHi, onExitHub);
 
-  loraCompose = panel(scrLora, 0, 0, SCREEN_W, SCREEN_H, 0x07090B, 0);
-  loraTa = lv_textarea_create(loraCompose);
-  lv_obj_set_pos(loraTa, 12, 12); lv_obj_set_size(loraTa, 776, 64);
-  lv_textarea_set_one_line(loraTa, true);
+  loraCompose = panel(scrLora, 0, 0, SCREEN_W, SCREEN_H, T->bg, 0);
+  loraTa = textField(loraCompose, 12, 12, 776, 64, "Type a message to everyone in range", nullptr);
   lv_textarea_set_max_length(loraTa, 100);
-  lv_textarea_set_placeholder_text(loraTa, "Type a message to everyone in range");
-  lv_obj_set_style_text_font(loraTa, F_M, 0);
-  lv_obj_set_style_bg_color(loraTa, lv_color_hex(C_CARD2), 0);
-  lv_obj_set_style_text_color(loraTa, lv_color_hex(C_TEXT), 0);
-  lv_obj_set_style_border_width(loraTa, 0, 0);
-  loraKb = lv_keyboard_create(loraCompose);
-  lv_obj_set_size(loraKb, SCREEN_W, 270);
-  lv_obj_align(loraKb, LV_ALIGN_BOTTOM_MID, 0, 0);
-  lv_obj_set_style_text_font(loraKb, F_M, 0);
-  lv_keyboard_set_textarea(loraKb, loraTa);
-  lv_obj_add_event_cb(loraKb, onKbLora, LV_EVENT_ALL, nullptr);
+  loraKb = keyboardFor(loraCompose, SCREEN_W, 270, loraTa, onKbLora);
   lv_obj_add_flag(loraCompose, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -186,8 +174,8 @@ static void loraUiTick() {
   struct tm t;
   if (nowTm(&t)) { char b[8]; snprintf(b, sizeof(b), "%02d:%02d", t.tm_hour, t.tm_min); lv_label_set_text(loraClock, b); }
   char s[160];
-  if (loraOk) snprintf(s, sizeof(s), "%s%.1f MHz  SF9\nsent %d   heard %d\nlast %d dBm  SNR %.0f", LV_SYMBOL_OK " ", LORA_FREQ_MHZ, loraTx, loraRx, (int)loraRssi, loraSnr);
-  else snprintf(s, sizeof(s), LV_SYMBOL_WARNING " No radio (error %d)\nIs the LoRa module fitted and\nS1 S0 set to 01?", loraErr);
+  if (loraOk) snprintf(s, sizeof(s), "%.1f MHz \xC2\xB7 SF9\nsent %d \xC2\xB7 heard %d\nlast %d dBm \xC2\xB7 SNR %.0f", LORA_FREQ_MHZ, loraTx, loraRx, (int)loraRssi, loraSnr);
+  else snprintf(s, sizeof(s), "No radio (error %d)\nIs the LoRa module fitted and\nS1 S0 set to 01?", loraErr);
   lv_label_set_text(loraStatus, s);
   lv_obj_set_style_text_color(loraStatus, lv_color_hex(loraOk ? C_TEXT : C_BAD), 0);
   char n[200] = ""; int c = 0;

@@ -15,9 +15,8 @@ static void locSearch() {
 static void onLocPick(lv_event_t *e) {
   const GeoHit &g = geoHits[(intptr_t)lv_event_get_user_data(e)];
   weatherSaveLocation(g.lat, g.lon, g.name, g.cc);
-  lv_label_set_text(homeWxPlace, wxPlace);
   lv_label_set_text(wxLblPlace, wxPlace);
-  lv_label_set_text_fmt(moreLocLbl, LV_SYMBOL_GPS "  Weather: %s", wxPlace);
+  lv_label_set_text_fmt(moreLocLbl, LUCIDE_MAP_PIN "  Weather: %s", wxPlace);
   lv_screen_load(scrMainRef);
   char m[64]; snprintf(m, sizeof(m), "Weather: %s", wxPlace);
   uiToast(m, C_GOOD);
@@ -47,9 +46,9 @@ static void onLocKb(lv_event_t *e) {
   else if (lv_event_get_code(e) == LV_EVENT_CANCEL) kbToggle(locKb, locList, false);
 }
 static void locBuild() {
-  scrLoc = subScreen(onLocBack, LV_SYMBOL_GPS "  Weather location");
+  scrLoc = subScreen(onLocBack, "Weather location");
   locTa = textField(scrLoc, 20, 84, 644, 64, "Your town, e.g. Leeds", onLocTa);
-  textBtn(scrLoc, 674, 84, 106, 64, "Search", F_M, C_ACCENT, onLocSearchBtn);
+  textBtn(scrLoc, 674, 84, 106, 64, LUCIDE_SEARCH, I_24, T->primary, onLocSearchBtn);
   locStatus = mkLabel(scrLoc, "", F_S, C_MUTED);
   lv_obj_set_pos(locStatus, 24, 158);
   locList = scrollCol(scrLoc, 32, 190, 736, 280, 8);

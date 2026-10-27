@@ -80,10 +80,10 @@ static int brightPct = 100;
 
 static lv_obj_t *scrWifi;
 static lv_obj_t *wifiListView, *wifiPwView, *wifiList, *wifiStatus, *wifiBackBtn, *wifiSsidLbl, *wifiTa, *wifiKb, *wifiPwStatus;
-static lv_obj_t *hdrClock, *hdrTimer, *hdrWifi, *toastBox, *toastLbl, *modalOv, *modalTitle, *modalBody;
+static lv_obj_t *hdrTimer, *hdrTalk, *toastBox, *toastLbl, *modalOv, *modalTitle, *modalBody;
 static uint32_t toastUntil = 0;
 // home page
-static lv_obj_t *homeClock, *homeDate, *homeWxIcon, *homeWxTemp, *homeWxCond, *homeWxHiLo, *homeNextT, *homeNextW, *homeStation, *homeStat, *homePlay;
+static lv_obj_t *homeClock, *homeDate, *homeWxIcon, *homeWxTemp, *homeNextT, *homeNextW, *homeStation, *homeStat, *homePlay;
 static lv_obj_t *homeWxPlace;
 // more page
 static lv_obj_t *moreLocLbl, *moreWifiLbl, *moreSys, *morePhotos, *moreUrl, *moreQr, *sldBright;
@@ -198,27 +198,23 @@ static void overlaysBuild() {
 
 #include "ui_wifi.h"
 
-// ───────────── navigation: rail + header ─────────────
-static const char *PAGE_NAMES[N_PAGES] = {"Home", "Radio", "Podcasts", "Weather", "Agenda", "House", "Timers", "More"};
-static const char *PAGE_ICONS[N_PAGES] = {LV_SYMBOL_HOME, LV_SYMBOL_AUDIO, LV_SYMBOL_LIST, LV_SYMBOL_TINT, LV_SYMBOL_LIST, LV_SYMBOL_CHARGE, LV_SYMBOL_BELL, LV_SYMBOL_SETTINGS};
+// ───────────── navigation: Home's bottom nav bar (ui_home.h); every other page has a back button ─────────────
+// Pages with a header (pageBody()) share a timer chip and the talk button, top right.
+static bool pageHasHeader(int p) { return p != PG_HOME && p != PG_PODCASTS && p != PG_WEATHER; }
 
 static void showPage(int p) {
   if (p < 0 || p >= N_PAGES) return;
   curPage = p;
   for (int i = 0; i < N_PAGES; i++) {
     if (i == p) lv_obj_remove_flag(pages[i], LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(pages[i], LV_OBJ_FLAG_HIDDEN);
-    bool sel = (i == p);
-    lv_obj_set_style_bg_opa(railBtn[i], sel ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-    lv_obj_set_style_text_color(lv_obj_get_child(railBtn[i], 0), lv_color_hex(sel ? C_ACCENT : C_MUTED), 0);
-    lv_obj_set_style_text_color(lv_obj_get_child(railBtn[i], 1), lv_color_hex(sel ? C_TEXT : C_MUTED), 0);
   }
-  lv_label_set_text(lblPageTitle, PAGE_NAMES[p]);
+  if (pageHasHeader(p)) lv_obj_remove_flag(hdrTalk, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(hdrTalk, LV_OBJ_FLAG_HIDDEN);
+  if (!pageHasHeader(p)) lv_obj_add_flag(hdrTimer, LV_OBJ_FLAG_HIDDEN);
   if (p == PG_HOUSE) reqHa = true;
   if (p == PG_WEATHER) weatherRefreshUi();
   if (p == PG_AGENDA) agendaRefreshUi();
   if (p == PG_HOUSE) houseRefreshUi();
 }
-static void onRail(lv_event_t *e) { showPage((int)(intptr_t)lv_event_get_user_data(e)); }
 static void onTimerChip(lv_event_t *) { showPage(PG_TIMERS); }
 static void onMicBtn(lv_event_t *) {
   if (netState != NET_UP) { uiToast("Connect to Wi-Fi first", C_WARN); return; }
@@ -226,45 +222,16 @@ static void onMicBtn(lv_event_t *) {
 }
 
 static void buildChrome(lv_obj_t *scr) {
-  panel(scr, 0, 0, RAIL_W, SCREEN_H, C_CARD, 0);
-  for (int i = 0; i < N_PAGES; i++) {                       // 8 rail buttons at a 59 px pitch fit the 480 px screen
-    lv_obj_t *b = lv_button_create(scr);
-    railBtn[i] = b;
-    lv_obj_set_pos(b, 6, 4 + i * 59);
-    lv_obj_set_size(b, RAIL_W - 12, 56);
-    lv_obj_set_style_radius(b, 20, 0);
-    lv_obj_set_style_bg_color(b, lv_color_hex(C_CARD3), 0);
-    lv_obj_set_style_bg_opa(b, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_shadow_width(b, 0, 0);
-    lv_obj_set_style_border_width(b, 0, 0);
-    lv_obj_set_style_pad_all(b, 2, 0);
-    lv_obj_t *ic = mkLabel(b, PAGE_ICONS[i], F_M, C_MUTED);
-    lv_obj_align(ic, LV_ALIGN_TOP_MID, 0, 2);
-    lv_obj_t *cap = mkLabel(b, PAGE_NAMES[i], F_XS, C_MUTED);
-    lv_obj_align(cap, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_obj_add_event_cb(b, onRail, LV_EVENT_CLICKED, (void *)(intptr_t)i);
-  }
-  lblPageTitle = mkLabel(scr, "Home", F_L, C_TEXT);
-  lv_obj_set_pos(lblPageTitle, PAGE_X + 18, 14);
-  hdrClock = mkLabel(scr, "--:--", F_M, C_MUTED);
-  lv_obj_set_pos(hdrClock, 468, 20);
-  hdrTimer = textBtn(scr, 540, 10, 112, 44, "", F_S, C_CARD3, onTimerChip);
-  lv_obj_add_flag(hdrTimer, LV_OBJ_FLAG_HIDDEN);
-  hdrWifi = textBtn(scr, 660, 10, 60, 44, LV_SYMBOL_WIFI, F_M, C_CARD2, onWifiBtn);
-  lv_obj_t *mic = lv_button_create(scr);
-  lv_obj_set_pos(mic, 732, 4);
-  lv_obj_set_size(mic, 58, 58);
-  lv_obj_set_style_radius(mic, LV_RADIUS_CIRCLE, 0);
-  lv_obj_set_style_bg_color(mic, lv_color_hex(C_ACCENT), 0);
-  lv_obj_set_style_bg_grad_color(mic, lv_color_hex(C_ACCENT2), 0);
-  lv_obj_set_style_bg_grad_dir(mic, LV_GRAD_DIR_VER, 0);
-  lv_obj_set_style_border_width(mic, 0, 0);
-  lv_obj_add_event_cb(mic, onMicBtn, LV_EVENT_CLICKED, nullptr);
-  drawMic(mic, 29, 27, 40, onFill(C_ACCENT));
   for (int i = 0; i < N_PAGES; i++) {
-    pages[i] = clearBox(scr, PAGE_X, PAGE_Y, PAGE_W, PAGE_H);
+    pages[i] = clearBox(scr, 0, 0, SCREEN_W, SCREEN_H);
     lv_obj_add_flag(pages[i], LV_OBJ_FLAG_HIDDEN);
   }
+}
+static void buildHeaderTools(lv_obj_t *scr) {                // after the pages, so they sit on top
+  hdrTimer = textBtn(scr, 552, 14, 132, 48, "", I_20, T->surfaceHi, onTimerChip);
+  lv_obj_add_flag(hdrTimer, LV_OBJ_FLAG_HIDDEN);
+  hdrTalk = textBtn(scr, SCREEN_W - T_PAD_X - 80, 14, 80, 48, LUCIDE_MIC, I_24, T->talk, onMicBtn);
+  pressStyle(hdrTalk, 20);
 }
 
 #include "ui_home.h"
@@ -307,7 +274,6 @@ static void uiTick(lv_timer_t *) {
   uint32_t now = millis();
   wifiTick(now);
   if (ntpSynced) { ntpSynced = false; systemToRtc(); }
-  lv_obj_set_style_text_color(lv_obj_get_child(hdrWifi, 0), lv_color_hex(netState == NET_UP ? C_GOOD : C_BAD), 0);
 
   // messages from worker tasks
   UiMsg m;
@@ -325,7 +291,12 @@ static void uiTick(lv_timer_t *) {
   artUiTick();
   char chip[24];
   bool anyTimer = timersTick(chip, sizeof(chip));
-  if (anyTimer) { lv_label_set_text(btnLabel(hdrTimer), chip); lv_obj_remove_flag(hdrTimer, LV_OBJ_FLAG_HIDDEN); } else lv_obj_add_flag(hdrTimer, LV_OBJ_FLAG_HIDDEN);
+  if (anyTimer && pageHasHeader(curPage)) {
+    char b[40]; snprintf(b, sizeof(b), LUCIDE_TIMER " %s", chip);
+    if (strcmp(lv_label_get_text(btnLabel(hdrTimer)), b)) lv_label_set_text(btnLabel(hdrTimer), b);
+    lv_obj_remove_flag(hdrTimer, LV_OBJ_FLAG_HIDDEN);
+  } else lv_obj_add_flag(hdrTimer, LV_OBJ_FLAG_HIDDEN);
+  homeTimerChip(anyTimer ? chip : nullptr);
   beepTick();
   agendaTick();
 
@@ -379,6 +350,7 @@ void setup() {
   brightPct  = constrain(prefs.getUChar("bri", 100), 10, 100);
   remoteTokenInit();
   weatherLoadLocation();
+  epPosLoad();                                               // where part-played podcast episodes got to
   calLoad();
   ambMode = prefs.getUChar("ssmode", 0) % 3;
   i2cMx = xSemaphoreCreateMutex();
@@ -449,6 +421,7 @@ void setup() {
   houseBuild(pages[PG_HOUSE]);
   timersBuild(pages[PG_TIMERS]);
   moreBuild(pages[PG_MORE]);
+  buildHeaderTools(scrMainRef);
   alarmBuild();
   overlaysBuild();
   voiceUiBuild();

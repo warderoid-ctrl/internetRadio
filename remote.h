@@ -43,15 +43,46 @@ async function j(u){const r=await fetch(u+(u.includes('?')?'&':'?')+'k='+K);retu
 async function c(x){await fetch('/api/cmd?c='+x+'&k='+K);setTimeout(s,400)}
 async function s(){try{const d=await j('/api/state');st.textContent=d.station;ti.textContent=d.title||d.status;vol.value=d.vol;
 sts.innerHTML=d.stations.map((n,i)=>'<button onclick="c(\'station&i='+i+'\')">'+n+'</button>').join('')}catch(e){}}
-async function ph(){try{const d=await j('/api/photos');pc.textContent=d.photos.length+' photos on the hub ('+Math.round(d.free/1024)+' KB free)';
+async function ph(){try{const d=await j('/api/photos');pc.innerHTML=d.photos.length+' photos on the hub ('+Math.round(d.free/1024)+' KB free)'+(d.free<1048576?' - <b>nearly full: tap a photo to delete it</b>':'');
 pl.innerHTML=d.photos.map(n=>'<span onclick="del(\''+n+'\')"><img class=th src="/photo?n='+enc(n)+'&k='+K+'"></span>').join('')}catch(e){}}
 async function del(n){if(confirm('Delete this photo?')){await fetch('/photo/del?n='+enc(n)+'&k='+K);ph()}}
-async function up(files){let i=0;for(const file of files){us.textContent='Uploading '+(++i)+' of '+files.length+'...';
+// photo metadata, read here because shrinking (canvas) drops it: EXIF date + GPS, else a date in the file name
+// (WhatsApp strips EXIF but names files IMG-20230814-WA0012.jpg); then the place name and that day's weather
+function tiff(b,s){const le=b.getUint16(s)==0x4949,u16=p=>b.getUint16(p,le),u32=p=>b.getUint32(p,le);
+const ifd=p=>{const n=u16(s+p),r={};for(let i=0;i<n;i++){const e=s+p+2+i*12;r[u16(e)]={c:u32(e+4),v:e+8}}return r};
+const str=x=>{const p=x.c>4?s+u32(x.v):x.v;let t='';for(let i=0;i<x.c-1;i++)t+=String.fromCharCode(b.getUint8(p+i));return t};
+const rat=(x,i)=>{const p=s+u32(x.v)+i*8;return u32(p)/u32(p+4)},dms=x=>rat(x,0)+rat(x,1)/60+rat(x,2)/3600;
+const o={},i0=ifd(u32(s+4));
+if(i0[0x8769]){const ex=ifd(u32(i0[0x8769].v)),d=ex[0x9003]||ex[0x9004];if(d)o.t=str(d)}
+if(!o.t&&i0[0x132])o.t=str(i0[0x132]);
+if(i0[0x8825]){const g=ifd(u32(i0[0x8825].v));if(g[2]&&g[4]){o.lat=dms(g[2])*(str(g[1])=='S'?-1:1);o.lon=dms(g[4])*(str(g[3])=='W'?-1:1);if(!o.lat&&!o.lon){delete o.lat;delete o.lon}}}
+if(o.t){const m=o.t.match(/^(\d{4}):(\d\d):(\d\d) (\d\d):(\d\d)/);o.t=m&&m[1]>'1970'?m[1]+'-'+m[2]+'-'+m[3]+'T'+m[4]+':'+m[5]:undefined}return o}
+async function exif(file){try{const b=new DataView(await file.slice(0,262144).arrayBuffer());if(b.getUint16(0)!=0xFFD8)return{};
+for(let o=2;o<b.byteLength-10;){const m=b.getUint16(o),L=b.getUint16(o+2);if(m==0xFFE1&&b.getUint32(o+4)==0x45786966)return tiff(b,o+10);
+if((m&0xFF00)!=0xFF00||m==0xFFDA)break;o+=2+L}}catch(e){}return{}}
+function nameDate(n){const m=n.match(/(?:^|\D)((?:19|20)\d\d)[-_]?(0[1-9]|1[0-2])[-_]?(0[1-9]|[12]\d|3[01])(?:[-_ T]?([01]\d|2[0-3])[-_.:]?([0-5]\d))?/);
+return m?m[1]+'-'+m[2]+'-'+m[3]+(m[4]?'T'+m[4]+':'+m[5]:''):undefined}
+function iso(ms){const d=new Date(ms),p=x=>String(x).padStart(2,'0');return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'T'+p(d.getHours())+':'+p(d.getMinutes())}
+// last resort: the file's modified time (on phones usually when it was taken / received), unless it's just now
+async function meta(file){const m=await exif(file);if(m.t)m.s='photo';if(!m.t){m.t=nameDate(file.name);if(m.t)m.s='name'}
+if(!m.t&&file.lastModified&&Date.now()-file.lastModified>36e5){m.t=iso(file.lastModified);m.s='file'}
+if(m.lat!==undefined){try{const r=await(await fetch('https://api.bigdatacloud.net/data/reverse-geocode-client?latitude='+m.lat+'&longitude='+m.lon+'&localityLanguage=en')).json();
+const a=r.city||r.locality||r.principalSubdivision;m.p=[a,r.countryName].filter(x=>x).join(', ')}catch(e){}
+if(m.t){try{const d=m.t.slice(0,10),r=await(await fetch('https://archive-api.open-meteo.com/v1/archive?latitude='+m.lat+'&longitude='+m.lon+'&start_date='+d+'&end_date='+d+'&daily=weather_code,temperature_2m_max&timezone=auto')).json();
+if(r.daily&&r.daily.weather_code[0]!=null){m.wc=r.daily.weather_code[0];m.tx=Math.round(r.daily.temperature_2m_max[0])}}catch(e){}}}return m}
+async function up(files){let i=0,found=0,log=[];for(const file of files){us.textContent='Uploading '+(++i)+' of '+files.length+'...';
+const m=await meta(file);if(m.t||m.p)found++;
+log.push(esc(file.name)+': '+(m.t?'date from '+({photo:'photo',name:'file name',file:'file time'})[m.s]:'no date')+', '+(m.p?esc(m.p):m.lat!==undefined?'location (no place name)':'no location'));
 const bm=await createImageBitmap(file);const W=bm.width,H=bm.height;
 const sc=Math.min(1,Math.max(800/W,480/H),1600/Math.max(W,H));const cv=document.createElement('canvas');
 cv.width=Math.round(W*sc);cv.height=Math.round(H*sc);cv.getContext('2d').drawImage(bm,0,0,cv.width,cv.height);
-const b=await new Promise(r=>cv.toBlob(r,'image/jpeg',.85));const fd=new FormData();fd.append('file',b,'p'+Date.now()+'_'+i+'.jpg');
-await fetch('/upload?k='+K,{method:'POST',body:fd})}us.textContent='Done';ph()}
+const b=await new Promise(r=>cv.toBlob(r,'image/jpeg',.85));
+// the date goes in the name too (d202308141822_...), so the hub can find "on this day" photos without opening them
+const base=(m.t?'d'+m.t.replace(/\D/g,'').padEnd(12,'0').slice(0,12)+'_':'p')+Date.now()+'_'+i;
+const fd=new FormData();fd.append('file',b,base+'.jpg');
+if(m.t||m.p){m.lat=m.lat&&+m.lat.toFixed(4);m.lon=m.lon&&+m.lon.toFixed(4);fd.append('file',new Blob([JSON.stringify(m)],{type:'application/json'}),base+'.json')}
+const r=await fetch('/upload?k='+K,{method:'POST',body:fd});if(!r.ok||(await r.text())!='ok')log.push('<b>'+esc(file.name)+': not saved - hub full?</b>')}
+us.innerHTML='Done - '+found+' of '+files.length+' had a date or place<br>'+log.join('<br>');ph()}
 async function ag(){try{const d=await j('/api/agenda');agl.innerHTML=d.cal?(d.items.length?d.items.map(a=>'<div style="margin:8px 0"><b>'+esc(a.t)+'</b><br>'+esc(a.w)+(a.l?' - '+esc(a.l):'')+'</div>').join(''):'Nothing in the next two weeks'):'No calendar yet - add one below';
 cl.innerHTML=d.links.map((n,i)=>'<div class=row style="align-items:center"><span class=m style="flex:1">'+esc(n)+'</span><button onclick="cdel('+i+')">Remove</button></div>').join('')}catch(e){}}
 function esc(t){return String(t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
@@ -111,7 +142,12 @@ static void hPhotos() {
   String o = "{\"photos\":[";
   File root = LittleFS.open("/photos");
   bool first = true;
-  if (root && root.isDirectory()) for (File f = root.openNextFile(); f; f = root.openNextFile()) { if (!first) o += ","; first = false; o += "\"" + jsonEsc(f.name()) + "\""; }
+  if (root && root.isDirectory()) for (File f = root.openNextFile(); f; f = root.openNextFile()) {
+    if (!isImageName(f.name())) continue;                     // not the .json metadata next to each photo
+    if (!first) o += ",";
+    first = false;
+    o += "\"" + jsonEsc(f.name()) + "\"";
+  }
   o += "],\"free\":" + String(LittleFS.totalBytes() - LittleFS.usedBytes()) + "}";
   server.send(200, "application/json", o);
 }
@@ -129,21 +165,37 @@ static void hPhotoGet() {
 }
 static void hPhotoDel() {
   if (!authed()) return deny();
-  LittleFS.remove("/photos/" + safeName(server.arg("n")));
+  String p = "/photos/" + safeName(server.arg("n"));
+  LittleFS.remove(p);
+  int dot = p.lastIndexOf('.');
+  String meta = dot > 0 ? p.substring(0, dot) + ".json" : String();
+  if (meta.length() && LittleFS.exists(meta)) LittleFS.remove(meta);   // and its metadata, if it had any
   server.send(200, "application/json", "{\"ok\":true}");
 }
-static void hUploadDone() { server.send(upAuthOk ? 200 : 401, "text/plain", upAuthOk ? "ok" : "denied"); }
+static bool upFailed = false;                                // a write came up short (flash full): say so, keep nothing
+static String upPath;
+static void hUploadDone() {
+  if (!upAuthOk) { server.send(401, "text/plain", "denied"); return; }
+  server.send(upFailed ? 507 : 200, "text/plain", upFailed ? "full" : "ok");
+}
 static void hUpload() {
   HTTPUpload &u = server.upload();
   if (u.status == UPLOAD_FILE_START) {
     upAuthOk = authed();
     if (!upAuthOk) return;
+    // a request is one photo, then maybe its .json: start clean on the photo, skip the .json if the photo didn't fit
+    if (!u.filename.endsWith(".json")) upFailed = false;
+    upPath = "";
+    if (upFailed) return;
     LittleFS.mkdir("/photos");
-    upFile = LittleFS.open("/photos/" + safeName(u.filename), FILE_WRITE);
+    upPath = "/photos/" + safeName(u.filename);
+    upFile = LittleFS.open(upPath, FILE_WRITE);
+    if (!upFile) upFailed = true;
   } else if (u.status == UPLOAD_FILE_WRITE) {
-    if (upAuthOk && upFile) upFile.write(u.buf, u.currentSize);
+    if (upAuthOk && upFile && upFile.write(u.buf, u.currentSize) != u.currentSize) upFailed = true;
   } else if (u.status == UPLOAD_FILE_END || u.status == UPLOAD_FILE_ABORTED) {
     if (upFile) upFile.close();
+    if ((upFailed || u.status == UPLOAD_FILE_ABORTED) && upPath.length()) LittleFS.remove(upPath);
   }
 }
 
@@ -183,7 +235,10 @@ static void remoteBegin() {
   if (remoteStarted) return;
   remoteStarted = true;
   if (MDNS.begin("crowhub")) MDNS.addService("http", "tcp", 80);
-  server.on("/", HTTP_GET, []() { server.send(200, "text/html", REMOTE_HTML); });
+  server.on("/", HTTP_GET, []() {
+    server.sendHeader("Cache-Control", "no-store");           // a phone must never run an old copy of the page
+    server.send(200, "text/html", REMOTE_HTML);
+  });
   server.on("/api/state", HTTP_GET, hState);
   server.on("/api/cmd", HTTP_GET, hCmd);
   server.on("/api/photos", HTTP_GET, hPhotos);

@@ -14,7 +14,8 @@
 
 static lv_obj_t *scrAmbient, *imgFront, *imgBack;
 static lv_obj_t *ambPhotoUi, *ambClockUi;                      // overlay groups for the two looks
-static lv_obj_t *ambTime, *ambDate, *ambWx, *ambBigTime, *ambBigDate, *ambBigWx, *ambBigNext, *ambWxIcon;
+static lv_obj_t *ambTime, *ambDate, *ambWx, *ambBigTime, *ambBigDate, *ambWake;
+static lv_obj_t *ambSleepCard, *ambSleepIcon, *ambSleepVal, *ambSleepCap, *ambWxCard, *ambWxIcon, *ambWxVal, *ambWxCap;
 static lv_image_dsc_t dscA, dscB;
 static uint16_t *bufA = nullptr, *bufB = nullptr;
 static bool frontIsA = true;
@@ -28,16 +29,36 @@ static uint32_t ambNextSlide = 0;
 static LGFX_Sprite photoSpr;   // decoder only, renders into our own buffers
 static bool sprSwap = false;
 
-struct PhotoRef { char path[56]; uint8_t src; };               // src 0 = LittleFS, 1 = SD
+// src 0 = LittleFS, 1 = SD. taken: when the photo was taken (from its name, d202308141822_..., set by the phone
+// page; 0 = unknown). Place, weather etc. are in a .json next to it, read when the photo is shown.
+struct PhotoRef { char path[56]; uint8_t src; time_t taken; };
 static PhotoRef *photos = nullptr;
 static int nPhotos = 0, photoIdx = -1;
 static uint8_t photoOrder[MAX_PHOTOS];                          // shuffled play order, reshuffled each round
 static int orderPos = 0, orderN = 0;
+static time_t nameTaken(const char *name) {                     // "d202308141822_..." -> local time, else 0
+  if (name[0] != 'd' || strlen(name) < 13) return 0;
+  for (int i = 1; i <= 12; i++) if (!isdigit((unsigned char)name[i])) return 0;
+  auto num = [&](int at, int len) { int v = 0; for (int i = 0; i < len; i++) v = v * 10 + (name[at + i] - '0'); return v; };
+  struct tm t = {};
+  t.tm_year = num(1, 4) - 1900; t.tm_mon = num(5, 2) - 1; t.tm_mday = num(7, 2);
+  t.tm_hour = num(9, 2); t.tm_min = num(11, 2); t.tm_isdst = -1;
+  return mktime(&t);
+}
+// taken on today's date in an earlier year
+static bool onThisDay(time_t taken) {
+  struct tm now, t;
+  if (!taken || !nowTm(&now)) return false;
+  localtime_r(&taken, &t);
+  return t.tm_mon == now.tm_mon && t.tm_mday == now.tm_mday && t.tm_year < now.tm_year;
+}
 static int nextShuffled() {
   if (orderPos >= orderN || orderN != nPhotos) {
     orderN = nPhotos; orderPos = 0;
     for (int i = 0; i < orderN; i++) photoOrder[i] = i;
     for (int i = orderN - 1; i > 0; i--) { int j = esp_random() % (i + 1); uint8_t t = photoOrder[i]; photoOrder[i] = photoOrder[j]; photoOrder[j] = t; }
+    // "on this day" photos lead each round
+    std::stable_partition(photoOrder, photoOrder + orderN, [](uint8_t k) { return onThisDay(photos[k].taken); });
     if (orderN > 1 && photoOrder[0] == photoIdx) { uint8_t t = photoOrder[0]; photoOrder[0] = photoOrder[1]; photoOrder[1] = t; }  // no repeat across rounds
   }
   return photoOrder[orderPos++];
@@ -67,7 +88,12 @@ static void scanDir(fs::FS &fsys, const char *dir, uint8_t src) {
   while (f && nPhotos < MAX_PHOTOS) {
     if (!f.isDirectory() && isImageName(f.name()) && f.name()[0] != '.') {
       String p = f.path();
-      if (p.length() < sizeof(photos[0].path)) { strlcpy(photos[nPhotos].path, p.c_str(), sizeof(photos[0].path)); photos[nPhotos].src = src; nPhotos++; }
+      if (p.length() < sizeof(photos[0].path)) {
+        strlcpy(photos[nPhotos].path, p.c_str(), sizeof(photos[0].path));
+        photos[nPhotos].src = src;
+        photos[nPhotos].taken = nameTaken(f.name());
+        nPhotos++;
+      }
     }
     f = root.openNextFile();
   }
@@ -231,6 +257,76 @@ static bool decodeInto(uint16_t *dst, const PhotoRef &p, int &bw, int &bh) {
   return ok;
 }
 
+// ───────────── photo caption: where, when, how long ago, the weather that day, how far from home ─────────────
+static lv_obj_t *ambCap, *ambCapTitle, *ambCapLine;
+static void agoText(time_t then, char *b, size_t n) {
+  struct tm now, t;
+  if (!nowTm(&now)) { b[0] = 0; return; }
+  localtime_r(&then, &t);
+  int years = now.tm_year - t.tm_year - ((now.tm_mon < t.tm_mon || (now.tm_mon == t.tm_mon && now.tm_mday < t.tm_mday)) ? 1 : 0);
+  long days = (long)((time(nullptr) - then) / 86400);
+  if (onThisDay(then)) snprintf(b, n, "%d year%s ago today", now.tm_year - t.tm_year, now.tm_year - t.tm_year == 1 ? "" : "s");
+  else if (days < 1) snprintf(b, n, "Today");
+  else if (days < 2) snprintf(b, n, "Yesterday");
+  else if (days < 14) snprintf(b, n, "%ld days ago", days);
+  else if (days < 60) snprintf(b, n, "%ld weeks ago", days / 7);
+  else if (years < 1) snprintf(b, n, "%ld months ago", days / 30);
+  else snprintf(b, n, years == 1 ? "A year ago" : "%d years ago", years);
+}
+static float distKm(float lat1, float lon1, float lat2, float lon2) {   // haversine
+  const float R = 6371.0f, r = (float)M_PI / 180.0f;
+  float dl = (lat2 - lat1) * r, dn = (lon2 - lon1) * r;
+  float a = sinf(dl / 2) * sinf(dl / 2) + cosf(lat1 * r) * cosf(lat2 * r) * sinf(dn / 2) * sinf(dn / 2);
+  return 2 * R * asinf(std::min(1.0f, sqrtf(a)));
+}
+static void photoCaption(const PhotoRef &p) {
+  char place[64] = "", when[24] = "", parts[200] = "";
+  time_t taken = p.taken;
+  int wc = -1, tx = 0; bool pos = false; float lat = 0, lon = 0;
+  if (p.src == 0) {                                             // the phone page's metadata, next to the photo
+    String j = String(p.path);
+    j = j.substring(0, j.lastIndexOf('.')) + ".json";
+    File f = LittleFS.exists(j) ? LittleFS.open(j, "r") : File();
+    if (f) {
+      JsonDocument d;
+      if (!deserializeJson(d, f)) {
+        copyText(place, sizeof(place), d["p"] | "");
+        if (d["wc"].is<int>()) { wc = d["wc"]; tx = d["tx"] | 0; }
+        if (d["lat"].is<float>() && d["lon"].is<float>()) { pos = true; lat = d["lat"]; lon = d["lon"]; }
+      }
+      f.close();
+    }
+  }
+  auto add = [&](const char *s) { if (!s[0]) return; if (parts[0]) strlcat(parts, " \xC2\xB7 ", sizeof(parts)); strlcat(parts, s, sizeof(parts)); };
+  if (taken) {
+    struct tm t; localtime_r(&taken, &t);
+    snprintf(when, sizeof(when), "%d %s %d", t.tm_mday, MON3[t.tm_mon], t.tm_year + 1900);
+    if (place[0]) add(when);
+    char ago[32]; agoText(taken, ago, sizeof(ago)); add(ago);
+  }
+  if (wc >= 0) {
+    char w[48]; snprintf(w, sizeof(w), "%d\xC2\xB0 %s", USE_CELSIUS ? tx : tx * 9 / 5 + 32, wxText(wc)); add(w);
+  }
+  if (pos) {
+    float km = distKm(wxLat, wxLon, lat, lon);
+    char d[40];
+    if (km < 2) strlcpy(d, "At home", sizeof(d));
+    else {
+      long v = lroundf(km * (USE_MPH ? 0.621f : 1.0f));
+      const char *u = USE_MPH ? "miles" : "km";
+      if (v >= 1000) snprintf(d, sizeof(d), "%ld,%03ld %s from home", v / 1000, v % 1000, u);   // 1,640 km
+      else snprintf(d, sizeof(d), "%ld %s from home", v, u);
+    }
+    add(d);
+  }
+  const char *title = place[0] ? place : when;
+  if (!title[0]) { lv_obj_add_flag(ambCap, LV_OBJ_FLAG_HIDDEN); return; }   // nothing known: no caption
+  lv_label_set_text(ambCapTitle, title);
+  lv_label_set_text(ambCapLine, parts);
+  if (parts[0]) lv_obj_remove_flag(ambCapLine, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(ambCapLine, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_remove_flag(ambCap, LV_OBJ_FLAG_HIDDEN);
+}
+
 static void fadeCb(void *o, int32_t v) { lv_obj_set_style_opa((lv_obj_t *)o, (lv_opa_t)v, 0); }
 static void panXCb(void *o, int32_t v) { lv_obj_set_x((lv_obj_t *)o, v); }
 static void panYCb(void *o, int32_t v) { lv_obj_set_y((lv_obj_t *)o, v); }
@@ -266,6 +362,7 @@ static bool nextPhoto() {
     uint16_t *dst = frontIsA ? bufB : bufA;                    // decode into the hidden buffer
     int w, h;
     if (!decodeInto(dst, photos[photoIdx], w, h)) continue;
+    photoCaption(photos[photoIdx]);
     lv_obj_t *back = frontIsA ? imgBack : imgFront;
     lv_obj_t *front = frontIsA ? imgFront : imgBack;
     lv_image_dsc_t &d = frontIsA ? dscB : dscA;
@@ -324,30 +421,67 @@ static void ambientBuild() {
   lv_obj_add_flag(ambPhotoUi, LV_OBJ_FLAG_EVENT_BUBBLE);
   lv_obj_remove_flag(ambPhotoUi, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_t *p1 = pill(ambPhotoUi, 24, 372, 250, 88);
-  ambTime = mkLabel(p1, "--:--", F_XL, C_TEXT);
-  lv_obj_set_pos(ambTime, 22, 6);
-  ambDate = mkLabel(p1, "", F_XS, C_MUTED);
-  lv_obj_set_pos(ambDate, 24, 64);
+  ambTime = mkLabel(p1, "--:--", F_T34, 0xEDE6DD);
+  lv_obj_set_pos(ambTime, 22, 10);
+  ambDate = mkLabel(p1, "", F_XS, 0xB3A99D);
+  lv_obj_set_pos(ambDate, 24, 58);
   lv_obj_t *p2 = pill(ambPhotoUi, 560, 394, 216, 66);
-  ambWx = mkLabel(p2, "", F_M, C_TEXT);
+  ambWx = mkLabel(p2, "", F_M, 0xEDE6DD);
   lv_obj_center(ambWx);
+  // caption, top left, sized to its text: place (or date) over "14 Aug 2023 · 3 years ago today · 27° Clear sky..."
+  ambCap = pill(ambPhotoUi, 24, 24, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_style_radius(ambCap, 22, 0);
+  lv_obj_set_style_pad_hor(ambCap, 18, 0);
+  lv_obj_set_style_pad_ver(ambCap, 12, 0);
+  lv_obj_set_flex_flow(ambCap, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_row(ambCap, 2, 0);
+  ambCapTitle = mkLabel(ambCap, "", F_L, 0xEDE6DD);
+  ambCapLine = mkLabel(ambCap, "", F_S, 0xB3A99D);
+  lv_obj_set_style_max_width(ambCapTitle, 640, 0);
+  lv_obj_set_style_max_width(ambCapLine, 640, 0);
+  lv_obj_add_flag(ambCap, LV_OBJ_FLAG_HIDDEN);
 
-  // clock look
+  // clock look (StandBy style, Daylight-Night mockup): date + huge time on the left, sleep timer and overnight
+  // weather cards on the right. At night everything is one dim red on black; by day the dark theme's text colours.
   ambClockUi = clearBox(scrAmbient, 0, 0, SCREEN_W, SCREEN_H);
   lv_obj_add_flag(ambClockUi, LV_OBJ_FLAG_EVENT_BUBBLE);
   lv_obj_remove_flag(ambClockUi, LV_OBJ_FLAG_CLICKABLE);
-  ambBigTime = mkLabel(ambClockUi, "--:--", F_CLK, C_TEXT);
-  lv_obj_align(ambBigTime, LV_ALIGN_TOP_MID, 0, 36);
-  ambBigDate = mkLabel(ambClockUi, "", F_L, C_MUTED);
-  lv_obj_align(ambBigDate, LV_ALIGN_TOP_MID, 0, 214);
-  ambWxIcon = wxIcon(ambClockUi, 210, 296, 64, WX_CLOUD, false);
-  ambBigWx = mkLabel(ambClockUi, "", F_L, C_TEXT);
-  lv_obj_set_pos(ambBigWx, 290, 306);
-  ambBigNext = mkLabel(ambClockUi, "", F_M, C_MUTED);
-  lv_obj_set_width(ambBigNext, 700);
-  lv_obj_set_style_text_align(ambBigNext, LV_TEXT_ALIGN_CENTER, 0);
-  lv_label_set_long_mode(ambBigNext, LV_LABEL_LONG_DOT);
-  lv_obj_align(ambBigNext, LV_ALIGN_BOTTOM_MID, 0, -36);
+  ambBigDate = mkLabel(ambClockUi, "", F_S, T_NIGHT);
+  lv_obj_set_style_text_letter_space(ambBigDate, 1, 0);
+  lv_obj_set_pos(ambBigDate, 28, 128);
+  ambBigTime = mkLabel(ambClockUi, "--:--", F_NIGHT, T_NIGHT);
+  lv_obj_set_style_text_letter_space(ambBigTime, -18, 0);
+  lv_obj_set_pos(ambBigTime, 12, 152);
+
+  lv_obj_t *col = lv_obj_create(ambClockUi);                     // the cards + hint, centred vertically on the right
+  lv_obj_remove_style_all(col);
+  lv_obj_set_size(col, 168, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_row(col, 12, 0);
+  lv_obj_align(col, LV_ALIGN_RIGHT_MID, -24, 0);
+  lv_obj_add_flag(col, LV_OBJ_FLAG_EVENT_BUBBLE);
+  lv_obj_remove_flag(col, LV_OBJ_FLAG_CLICKABLE);
+  auto nightCard = [&](lv_obj_t *&cardObj, lv_obj_t *&icon, lv_obj_t *&val, lv_obj_t *&cap, const char *glyph) {
+    cardObj = panel(col, 0, 0, 168, LV_SIZE_CONTENT, T_NIGHT_BG, 26);
+    lv_obj_set_style_border_width(cardObj, 1, 0);
+    lv_obj_set_style_pad_all(cardObj, 16, 0);
+    lv_obj_set_flex_flow(cardObj, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(cardObj, 6, 0);
+    lv_obj_add_flag(cardObj, LV_OBJ_FLAG_EVENT_BUBBLE);
+    lv_obj_remove_flag(cardObj, LV_OBJ_FLAG_CLICKABLE);
+    icon = mkLabel(cardObj, glyph, I_24, T_NIGHT);
+    val = mkLabel(cardObj, "", F_T26, T_NIGHT);
+    cap = mkLabel(cardObj, "", F_XS, T_NIGHT);
+    lv_obj_set_width(cap, 168 - 32);
+    lv_label_set_long_mode(cap, LV_LABEL_LONG_WRAP);
+  };
+  nightCard(ambSleepCard, ambSleepIcon, ambSleepVal, ambSleepCap, LUCIDE_MOON);
+  nightCard(ambWxCard, ambWxIcon, ambWxVal, ambWxCap, LUCIDE_CLOUD);
+  ambWake = mkLabel(col, "TAP TO WAKE", F_XS, T_NIGHT);
+  lv_obj_set_width(ambWake, 168);
+  lv_obj_set_style_text_align(ambWake, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_letter_space(ambWake, 1, 0);
+  lv_obj_add_flag(ambSleepCard, LV_OBJ_FLAG_HIDDEN);
   lv_obj_add_flag(ambClockUi, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -355,12 +489,15 @@ static void ambientLook(bool clockLook, bool night) {
   ambNight = night;
   if (clockLook) { lv_obj_add_flag(imgFront, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(imgBack, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(ambPhotoUi, LV_OBJ_FLAG_HIDDEN); lv_obj_remove_flag(ambClockUi, LV_OBJ_FLAG_HIDDEN); }
   else { lv_obj_remove_flag(imgFront, LV_OBJ_FLAG_HIDDEN); lv_obj_remove_flag(imgBack, LV_OBJ_FLAG_HIDDEN); lv_obj_remove_flag(ambPhotoUi, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(ambClockUi, LV_OBJ_FLAG_HIDDEN); }
-  uint32_t tc = night ? 0xB5471F : C_TEXT;                       // warm dim orange at night: easy on the eyes
-  lv_obj_set_style_text_color(ambBigTime, lv_color_hex(tc), 0);
-  lv_obj_set_style_text_color(ambBigDate, lv_color_hex(night ? 0x6E3115 : C_MUTED), 0);
-  lv_obj_set_style_text_color(ambBigWx, lv_color_hex(night ? 0x6E3115 : C_TEXT), 0);
-  lv_obj_set_style_text_color(ambBigNext, lv_color_hex(night ? 0x5A2811 : C_MUTED), 0);
-  lv_obj_set_style_opa(ambWxIcon, night ? LV_OPA_30 : LV_OPA_COVER, 0);
+  // one colour for everything at night (red chosen to stay readable with the backlight down); by day dark-theme text
+  uint32_t fg = night ? T_NIGHT : THEME_DARK.text, sub = night ? T_NIGHT : THEME_DARK.muted;
+  uint32_t line = night ? T_NIGHT_LINE : THEME_DARK.outline;
+  lv_obj_t *bigs[] = {ambBigTime, ambSleepVal, ambWxVal, ambSleepIcon, ambWxIcon};
+  lv_obj_t *smalls[] = {ambBigDate, ambSleepCap, ambWxCap, ambWake};
+  for (lv_obj_t *o : bigs) lv_obj_set_style_text_color(o, lv_color_hex(fg), 0);
+  for (lv_obj_t *o : smalls) lv_obj_set_style_text_color(o, lv_color_hex(sub), 0);
+  lv_obj_set_style_border_color(ambSleepCard, lv_color_hex(line), 0);
+  lv_obj_set_style_border_color(ambWxCard, lv_color_hex(line), 0);
 }
 
 static void ambientEnter() {
@@ -409,22 +546,35 @@ static void ambientTick() {
   }
   struct tm t;
   if (!nowTm(&t)) return;
-  char b[12], d[40];
+  // labels only change when their text does (once a minute at most): no redraws, no flicker
+  auto put = [](lv_obj_t *l, const char *s) { if (strcmp(lv_label_get_text(l), s)) lv_label_set_text(l, s); };
+  char b[12], d[40], up[24];
   snprintf(b, sizeof(b), "%02d:%02d", t.tm_hour, t.tm_min);
   snprintf(d, sizeof(d), "%s %d %s", DOWF[t.tm_wday], t.tm_mday, MON3[t.tm_mon]);
-  lv_label_set_text(ambTime, b);  lv_label_set_text(ambDate, d);
-  lv_label_set_text(ambBigTime, b); lv_label_set_text(ambBigDate, d);
+  snprintf(up, sizeof(up), "%s %d %s", DOW3[t.tm_wday], t.tm_mday, MON3[t.tm_mon]);
+  for (char *p = up; *p; p++) *p = toupper(*p);
+  put(ambTime, b); put(ambDate, d);
+  put(ambBigTime, b); put(ambBigDate, up);
+  // radio sleep timer card: only while one runs
+  if (sleepAt) {
+    char m[16], cap[80];
+    int32_t left = (int32_t)(sleepAt - now);
+    snprintf(m, sizeof(m), "%d min", left > 0 ? (int)(left / 60000 + 1) : 1);
+    snprintf(cap, sizeof(cap), "Radio sleep \xC2\xB7 %s", curSt.name);
+    put(ambSleepVal, m); put(ambSleepCap, cap);
+    lv_obj_remove_flag(ambSleepCard, LV_OBJ_FLAG_HIDDEN);
+  } else lv_obj_add_flag(ambSleepCard, LV_OBJ_FLAG_HIDDEN);
   DATA_LOCK(); WxData w = wx; DATA_UNLOCK();
   if (w.valid) {
     char s[48]; snprintf(s, sizeof(s), "%d\xC2\xB0 %s", w.temp, wxText(w.code));
-    lv_label_set_text(ambWx, s); lv_label_set_text(ambBigWx, s);
+    put(ambWx, s);
+    // overnight card: now, and what it'll be like in about six hours (hours[] steps by two)
+    const WxHour &later = w.hours[3];
+    char v[12], o[64];
+    snprintf(v, sizeof(v), "%d\xC2\xB0", w.temp);
+    snprintf(o, sizeof(o), "%s by %02d:00", wxText(later.code), later.hour);
+    put(ambWxVal, v); put(ambWxCap, o);
     static int lastCode = -1; static bool lastDay = true;
     if (lastCode != w.code || lastDay != w.day) { lastCode = w.code; lastDay = w.day; wxDraw(ambWxIcon, wxKindOf(w.code), !w.day); }
   }
-  Appt a;
-  if (agendaNext(a)) {
-    char wh[48], s[110]; fmtWhen(a, wh, sizeof(wh));
-    snprintf(s, sizeof(s), LV_SYMBOL_BELL "  %s  -  %s", a.title, wh);
-    lv_label_set_text(ambBigNext, s);
-  } else lv_label_set_text(ambBigNext, "");
 }

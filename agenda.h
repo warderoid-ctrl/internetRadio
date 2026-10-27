@@ -132,8 +132,8 @@ static time_t winStart, winEnd;
 static void addAppt(time_t s, time_t e, bool allDay, const char *title, const char *loc) {
   if (e <= winStart || s >= winEnd) return;
   Appt a; a.start = s; a.end = e; a.allDay = allDay;
-  copyAscii(a.title, sizeof(a.title), title && title[0] ? title : "(no title)");
-  copyAscii(a.loc, sizeof(a.loc), loc ? loc : "");
+  copyText(a.title, sizeof(a.title), title && title[0] ? title : "(no title)");
+  copyText(a.loc, sizeof(a.loc), loc ? loc : "");
   if (tmpN < MAX_APPT) { tmpA[tmpN++] = a; return; }
   int latest = 0;
   for (int i = 1; i < tmpN; i++) if (tmpA[i].start > tmpA[latest].start) latest = i;
@@ -376,17 +376,18 @@ static void agendaSentence(char *out, size_t n) {
 // ── agenda page ──
 static lv_obj_t *agList, *agHint;
 static void agendaBuild(lv_obj_t *pg) {
-  agList = scrollCol(pg, 12, 4, 688, 408, 8);
+  pg = pageBody(pg, "Agenda");
+  agList = scrollCol(pg, 0, 0, PAGE_W, PAGE_H, 6);
   agHint = nullptr;
 }
 
 static void agendaRefreshUi() {
   lv_obj_clean(agList);
   if (!agendaConfigured) {
-    lv_obj_t *c = card(agList, 0, 0, 688, 200);
-    lv_obj_t *t = mkLabel(c, LV_SYMBOL_LIST "  No calendar connected yet", F_L, C_TEXT);
+    lv_obj_t *c = card(agList, 0, 0, PAGE_W, 200);
+    lv_obj_t *t = mkLabel(c, LUCIDE_CALENDAR "  No calendar connected yet", I_24, C_TEXT);
     lv_obj_set_pos(t, 24, 22);
-    lv_obj_t *d = mkLabel(c, "Add one from your phone: More > Phone remote, scan the QR code,\nthen Calendars > paste your calendar's secret iCal link.\n(Google, Outlook and iCloud all have one - the phone page says where.)", F_S, C_MUTED);
+    lv_obj_t *d = mkLabel(c, "Add one from your phone: Settings > Phone remote, scan the QR code,\nthen Calendars > paste your calendar's secret iCal link.\n(Google, Outlook and iCloud all have one - the phone page says where.)", F_S, C_MUTED);
     lv_obj_set_pos(d, 24, 78);
     return;
   }
@@ -395,9 +396,9 @@ static void agendaRefreshUi() {
   int n;
   DATA_LOCK(); n = nAppts; memcpy(local, appts, sizeof(Appt) * n); DATA_UNLOCK();
   if (n == 0) {
-    lv_obj_t *c = card(agList, 0, 0, 688, 120);
-    lv_obj_t *t = mkLabel(c, LV_SYMBOL_OK "  Nothing in the next two weeks", F_L, C_GOOD);
-    lv_obj_set_pos(t, 24, 40);
+    lv_obj_t *c = card(agList, 0, 0, PAGE_W, 120);
+    lv_obj_t *t = mkLabel(c, LUCIDE_CHECK "  Nothing in the next two weeks", I_24, C_TEXT);
+    lv_obj_set_pos(t, 24, 44);
     return;
   }
   time_t now = time(nullptr);
@@ -412,31 +413,28 @@ static void agendaRefreshUi() {
     if (day != lastDay) {
       lastDay = day;
       char h[40];
-      if (day == today) snprintf(h, sizeof(h), "TODAY  -  %s %d %s", DOWF[t.tm_wday], t.tm_mday, MON3[t.tm_mon]);
-      else if (day == today + 1) snprintf(h, sizeof(h), "TOMORROW  -  %s %d %s", DOWF[t.tm_wday], t.tm_mday, MON3[t.tm_mon]);
+      if (day == today) snprintf(h, sizeof(h), "Today \xC2\xB7 %s %d %s", DOWF[t.tm_wday], t.tm_mday, MON3[t.tm_mon]);
+      else if (day == today + 1) snprintf(h, sizeof(h), "Tomorrow \xC2\xB7 %s %d %s", DOWF[t.tm_wday], t.tm_mday, MON3[t.tm_mon]);
       else snprintf(h, sizeof(h), "%s %d %s", DOWF[t.tm_wday], t.tm_mday, MON3[t.tm_mon]);
-      lv_obj_t *hl = mkLabel(agList, h, F_S, C_ACCENT);
-      lv_obj_set_style_text_letter_space(hl, 2, 0);
-      lv_obj_set_style_pad_top(hl, 6, 0);
+      lv_obj_t *hl = mkLabel(agList, h, F_M, C_MUTED);
+      lv_obj_set_style_pad_top(hl, 10, 0);
+      lv_obj_set_style_pad_left(hl, 6, 0);
     }
+    // the next appointment is a primary container (like Home's clock card), the rest are surface rows
     bool isNext = (!nextMarked && local[i].end > now);
     if (isNext) nextMarked = true;
-    lv_obj_t *r = panel(agList, 0, 0, 688, 66, isNext ? C_CARD3 : C_CARD, 18);
-    if (isNext) {
-      lv_obj_set_style_border_width(r, 6, 0);
-      lv_obj_set_style_border_color(r, lv_color_hex(C_ACCENT), 0);
-      lv_obj_set_style_border_side(r, LV_BORDER_SIDE_LEFT, 0);
-    }
+    uint32_t fg = isNext ? T->onPrimary : T->text, sub = isNext ? T->onPrimary : T->muted;
+    lv_obj_t *r = panel(agList, 0, 0, PAGE_W, 68, isNext ? T->primary : T->surface, T_R_ROW);
     char tm[12];
     if (local[i].allDay) strlcpy(tm, "All day", sizeof(tm)); else snprintf(tm, sizeof(tm), "%02d:%02d", t.tm_hour, t.tm_min);
-    lv_obj_t *lt = mkLabel(r, tm, F_M, isNext ? C_ACCENT : C_MUTED);
-    lv_obj_set_pos(lt, 22, 20);
-    lv_obj_t *ln = mkLabel(r, local[i].title, F_M, C_TEXT);
-    lv_obj_set_width(ln, local[i].loc[0] ? 340 : 540);
+    lv_obj_t *lt = mkLabel(r, tm, F_M, sub);
+    lv_obj_set_pos(lt, 22, 23);
+    lv_obj_t *ln = mkLabel(r, local[i].title, F_M, fg);
+    lv_obj_set_width(ln, local[i].loc[0] ? 400 : PAGE_W - 150);
     lv_label_set_long_mode(ln, LV_LABEL_LONG_DOT);
-    lv_obj_set_pos(ln, 128, 20);
+    lv_obj_set_pos(ln, 118, 23);
     if (local[i].loc[0]) {
-      lv_obj_t *ll = mkLabel(r, local[i].loc, F_XS, C_MUTED);
+      lv_obj_t *ll = mkLabel(r, local[i].loc, F_XS, sub);
       lv_obj_set_width(ll, 190);
       lv_label_set_long_mode(ll, LV_LABEL_LONG_DOT);
       lv_obj_align(ll, LV_ALIGN_RIGHT_MID, -16, 0);

@@ -78,8 +78,8 @@ static void podsSave() {                                      // UI
   f.close();
 }
 static void setPod(Pod &p, const char *name, const char *author, const char *feed) {
-  copyAscii(p.name, sizeof(p.name), name);
-  copyAscii(p.author, sizeof(p.author), author);
+  copyText(p.name, sizeof(p.name), name);
+  copyText(p.author, sizeof(p.author), author);
   strlcpy(p.feed, feed, sizeof(p.feed));
   p.art[0] = 0;
 }
@@ -206,7 +206,7 @@ private:
   void endField() {
     text[xl] = 0;
     unescape(text);
-    if (field == F_TITLE) copyAscii(cur.title, sizeof(cur.title), text);
+    if (field == F_TITLE) copyText(cur.title, sizeof(cur.title), text);
     else if (field == F_DATE) {                               // "Wed, 21 Oct 2026 18:00:00 +0000" -> "21 Oct 2026"
       const char *p = strchr(text, ',');
       p = p ? p + 1 : text;

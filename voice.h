@@ -288,7 +288,7 @@ static bool haConversation(const char *text, char *reply, size_t rn) {
   if (deserializeJson(doc, out)) return false;
   const char *sp = doc["response"]["speech"]["plain"]["speech"] | "";
   if (!sp[0]) return false;
-  copyAscii(reply, rn, sp);
+  copyText(reply, rn, sp);
   reqHa = true;
   return true;
 }
@@ -321,7 +321,7 @@ static bool sttViaHA(uint8_t *wav, size_t len, char *text, size_t tn) {
   if (deserializeJson(doc, out)) return false;
   const char *tx = doc["text"] | "";
   if (!tx[0]) return false;
-  copyAscii(text, tn, tx);
+  copyText(text, tn, tx);
   return true;
 }
 
@@ -407,27 +407,24 @@ static void voiceActions() {
 static lv_obj_t *voiceOv, *voiceTitle, *voiceBody, *voiceMicDot;
 static uint32_t voiceHideAt = 0;
 
-static void micPulse(void *o, int32_t v) { lv_obj_set_style_shadow_width((lv_obj_t *)o, v, 0); }
+static void micPulse(void *o, int32_t v) { lv_obj_set_style_bg_opa((lv_obj_t *)o, (lv_opa_t)v, 0); }
 
 static void voiceUiBuild() {
-  voiceOv = panel(lv_layer_top(), 110, 250, 640, 210, C_CARD, 32);
-  lv_obj_set_style_border_width(voiceOv, 3, 0);
-  lv_obj_set_style_border_color(voiceOv, lv_color_hex(C_ACCENT), 0);
-  lv_obj_set_style_shadow_width(voiceOv, 40, 0);
-  lv_obj_set_style_shadow_opa(voiceOv, LV_OPA_50, 0);
-  lv_obj_set_style_shadow_color(voiceOv, lv_color_hex(0x000000), 0);
+  // a surface container rising from the bottom, the talk-coloured mic breathing while it listens (no shadows in Tonal)
+  voiceOv = container(lv_layer_top(), 110, 250, 640, 210, T->surface);
+  lv_obj_set_style_border_width(voiceOv, 1, 0);
+  lv_obj_set_style_border_color(voiceOv, lv_color_hex(T->outline), 0);
   lv_obj_add_flag(voiceOv, LV_OBJ_FLAG_HIDDEN);
-  voiceMicDot = panel(voiceOv, 24, 24, 76, 76, C_ACCENT, LV_RADIUS_CIRCLE);
-  lv_obj_set_style_shadow_color(voiceMicDot, lv_color_hex(C_ACCENT), 0);
-  lv_obj_set_style_shadow_opa(voiceMicDot, LV_OPA_60, 0);
-  drawMic(voiceMicDot, 38, 38, 56, C_TEXT);
+  voiceMicDot = panel(voiceOv, 24, 24, 76, 76, T->talk, LV_RADIUS_CIRCLE);
+  lv_obj_t *mic = mkLabel(voiceMicDot, LUCIDE_MIC, I_28, T->onTalk);
+  lv_obj_center(mic);
   lv_anim_t a; lv_anim_init(&a);
   lv_anim_set_var(&a, voiceMicDot); lv_anim_set_exec_cb(&a, micPulse);
-  lv_anim_set_values(&a, 4, 36); lv_anim_set_duration(&a, 700);
+  lv_anim_set_values(&a, LV_OPA_50, LV_OPA_COVER); lv_anim_set_duration(&a, 700);
   lv_anim_set_playback_duration(&a, 700); lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
   lv_anim_start(&a);
-  voiceTitle = mkLabel(voiceOv, "Listening...", F_L, C_ACCENT);
-  lv_obj_set_pos(voiceTitle, 120, 40);
+  voiceTitle = mkLabel(voiceOv, "Listening...", F_T26, C_ACCENT);
+  lv_obj_set_pos(voiceTitle, 120, 44);
   voiceBody = mkLabel(voiceOv, "", F_M, C_TEXT);
   lv_obj_set_width(voiceBody, 590);
   lv_label_set_long_mode(voiceBody, LV_LABEL_LONG_WRAP);

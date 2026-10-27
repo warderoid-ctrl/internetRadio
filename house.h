@@ -36,8 +36,8 @@ static bool haPoll() {
     String st = tl >= 0 ? seg.substring(0, tl) : seg;
     String un = tl >= 0 ? seg.substring(tl + 1) : "";
     st.trim(); un.trim();
-    copyAscii(haSt[i].state, sizeof(haSt[i].state), st.c_str());
-    copyAscii(haSt[i].unit, sizeof(haSt[i].unit), un.c_str());
+    copyText(haSt[i].state, sizeof(haSt[i].state), st.c_str());
+    copyText(haSt[i].unit, sizeof(haSt[i].unit), un.c_str());
     haSt[i].known = true;
     pos = bar + 1; i++;
   }
@@ -93,10 +93,26 @@ static void onHaTile(lv_event_t *e) {
   } else if (HA_TILES[i].kind == 'B') postUi(UM_TOAST, HA_TILES[i].label, C_GOOD);
 }
 
+// a Lucide icon for a tile, from its entity's domain (and name)
+static const char *haIcon(const HaTile &t) {
+  const char *e = t.entity;
+  if (!strncmp(e, "light.", 6)) return LUCIDE_LIGHTBULB;
+  if (!strncmp(e, "switch.", 7)) return LUCIDE_PLUG;
+  if (!strncmp(e, "lock.", 5)) return LUCIDE_LOCK;
+  if (!strncmp(e, "media_player.", 13)) return LUCIDE_TV;
+  if (!strncmp(e, "fan.", 4)) return LUCIDE_FAN;
+  if (strHas(e, "door") || strHas(e, "window")) return LUCIDE_DOOR_OPEN;
+  if (strHas(e, "temp") || strHas(e, "climate")) return LUCIDE_THERMOMETER;
+  if (strHas(e, "humid")) return LUCIDE_DROPLETS;
+  if (t.kind == 'B') return LUCIDE_PLAY;
+  return t.kind == 'T' ? LUCIDE_POWER : LUCIDE_ZAP;
+}
+
 static void houseBuild(lv_obj_t *pg) {
+  pg = pageBody(pg, "Home");
   if (!HA_ENABLED) {
-    lv_obj_t *c = card(pg, 12, 4, 688, 230);
-    lv_obj_t *t = mkLabel(c, LV_SYMBOL_HOME "  Home Assistant isn't connected yet", F_L, C_TEXT);
+    lv_obj_t *c = card(pg, 0, 0, PAGE_W, 230);
+    lv_obj_t *t = mkLabel(c, LUCIDE_HOUSE "  Home Assistant isn't connected yet", I_24, C_TEXT);
     lv_obj_set_pos(t, 24, 22);
     lv_obj_t *d = mkLabel(c, "1. In Home Assistant: your profile > Security > Long-lived access tokens > Create.\n"
                              "2. Copy secrets.example.h to secrets.h and fill HA_URL (e.g. http://homeassistant.local:8123) and HA_TOKEN.\n"
@@ -107,37 +123,39 @@ static void houseBuild(lv_obj_t *pg) {
     haGrid = nullptr;
     return;
   }
-  haStatus = mkLabel(pg, "Connecting to Home Assistant...", F_XS, C_MUTED);
-  lv_obj_set_pos(haStatus, 18, 2);
+  haStatus = mkLabel(pg, "Connecting to Home Assistant...", I_20, C_MUTED);
+  lv_obj_set_pos(haStatus, 4, 0);
   haGrid = lv_obj_create(pg);
-  lv_obj_set_pos(haGrid, 12, 22);
-  lv_obj_set_size(haGrid, 688, 392);
+  lv_obj_set_pos(haGrid, 0, 32);
+  lv_obj_set_size(haGrid, PAGE_W, PAGE_H - 32);
   lv_obj_set_style_bg_opa(haGrid, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(haGrid, 0, 0);
   lv_obj_set_style_pad_all(haGrid, 0, 0);
-  lv_obj_set_style_pad_column(haGrid, 8, 0);
-  lv_obj_set_style_pad_row(haGrid, 8, 0);
+  lv_obj_set_style_pad_column(haGrid, T_GAP, 0);
+  lv_obj_set_style_pad_row(haGrid, T_GAP, 0);
   lv_obj_set_flex_flow(haGrid, LV_FLEX_FLOW_ROW_WRAP);
   lv_obj_set_scrollbar_mode(haGrid, LV_SCROLLBAR_MODE_OFF);
+  const int tw = (PAGE_W - 3 * T_GAP) / 4;
   for (int i = 0; i < N_TILES; i++) {
     lv_obj_t *b = lv_button_create(haGrid);
     haTile[i] = b;
-    lv_obj_set_size(b, 166, 122);
-    lv_obj_set_style_radius(b, 24, 0);
+    lv_obj_set_size(b, tw, 128);
     lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
     lv_obj_set_style_shadow_width(b, 0, 0);
     lv_obj_set_style_border_width(b, 0, 0);
+    lv_obj_set_style_pad_all(b, 0, 0);
+    pressStyle(b, T_R_TILE);
     char k = HA_TILES[i].kind;
-    lv_obj_t *ic = mkLabel(b, k == 'T' ? LV_SYMBOL_POWER : (k == 'B' ? LV_SYMBOL_PLAY : LV_SYMBOL_EYE_OPEN), F_L, C_TEXT);
-    lv_obj_set_pos(ic, 14, 10);
-    lv_obj_t *nm = mkLabel(b, HA_TILES[i].label, F_S, C_TEXT);
-    lv_obj_set_width(nm, 140);
+    lv_obj_t *ic = mkLabel(b, haIcon(HA_TILES[i]), I_28, C_TEXT);
+    lv_obj_set_pos(ic, 16, 14);
+    lv_obj_t *nm = mkLabel(b, HA_TILES[i].label, F_M, C_TEXT);
+    lv_obj_set_width(nm, tw - 32);
     lv_label_set_long_mode(nm, LV_LABEL_LONG_DOT);
-    lv_obj_set_pos(nm, 14, 62);
-    haLblState[i] = mkLabel(b, "...", F_M, C_MUTED);
-    lv_obj_set_width(haLblState[i], 140);
+    lv_obj_set_pos(nm, 16, 66);
+    haLblState[i] = mkLabel(b, "...", F_S, C_MUTED);
+    lv_obj_set_width(haLblState[i], tw - 32);
     lv_label_set_long_mode(haLblState[i], LV_LABEL_LONG_DOT);
-    lv_obj_set_pos(haLblState[i], 14, 88);
+    lv_obj_set_pos(haLblState[i], 16, 92);
     if (k != 'S') lv_obj_add_event_cb(b, onHaTile, LV_EVENT_CLICKED, (void *)(intptr_t)i);
     else lv_obj_remove_flag(b, LV_OBJ_FLAG_CLICKABLE);
   }
@@ -145,7 +163,7 @@ static void houseBuild(lv_obj_t *pg) {
 
 static void houseRefreshUi() {
   if (!HA_ENABLED || !haGrid) return;
-  lv_label_set_text(haStatus, haReachable ? LV_SYMBOL_OK "  Home Assistant connected" : LV_SYMBOL_WARNING "  Can't reach Home Assistant");
+  lv_label_set_text(haStatus, haReachable ? LUCIDE_CHECK "  Home Assistant connected" : LUCIDE_TRIANGLE_ALERT "  Can't reach Home Assistant");
   lv_obj_set_style_text_color(haStatus, lv_color_hex(haReachable ? C_GOOD : C_BAD), 0);
   DATA_LOCK();
   for (int i = 0; i < N_TILES; i++) {
@@ -159,10 +177,12 @@ static void houseRefreshUi() {
     else if (!strcmp(haSt[i].state, "off")) strlcpy(txt, strHas(HA_TILES[i].entity, "door") || strHas(HA_TILES[i].entity, "window") ? "Closed" : (strHas(HA_TILES[i].entity, "motion") ? "Clear" : "Off"), sizeof(txt));
     else strlcpy(txt, haSt[i].state, sizeof(txt));
     lv_label_set_text(haLblState[i], txt);
-    lv_obj_set_style_bg_color(haTile[i], lv_color_hex(on ? C_ACCENT : (k == 'B' ? C_CARD3 : C_CARD2)), 0);
-    if (on) { lv_obj_set_style_bg_grad_color(haTile[i], lv_color_hex(C_ACCENT2), 0); lv_obj_set_style_bg_grad_dir(haTile[i], LV_GRAD_DIR_VER, 0); }
-    else lv_obj_set_style_bg_grad_dir(haTile[i], LV_GRAD_DIR_NONE, 0);
-    lv_obj_set_style_text_color(haLblState[i], lv_color_hex(on ? C_TEXT : (k == 'S' ? C_TEXT : C_MUTED)), 0);
+    // on: a primary container; scenes / scripts: surfaceHi; everything else: surface
+    uint32_t bg = on ? T->primary : (k == 'B' ? T->surfaceHi : T->surface), fg = on ? T->onPrimary : T->text;
+    lv_obj_set_style_bg_color(haTile[i], lv_color_hex(bg), 0);
+    lv_obj_set_style_text_color(lv_obj_get_child(haTile[i], 0), lv_color_hex(fg), 0);
+    lv_obj_set_style_text_color(lv_obj_get_child(haTile[i], 1), lv_color_hex(fg), 0);
+    lv_obj_set_style_text_color(haLblState[i], lv_color_hex(on ? T->onPrimary : (k == 'S' ? T->text : T->muted)), 0);
   }
   DATA_UNLOCK();
 }

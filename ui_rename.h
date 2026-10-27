@@ -18,12 +18,12 @@ static void onRenameBtn(lv_event_t *) {
     lv_obj_set_style_bg_color(renOv, lv_color_hex(C_BG), 0);
     lv_obj_set_style_bg_opa(renOv, LV_OPA_COVER, 0);
     lv_obj_add_flag(renOv, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_t *t = mkLabel(renOv, LV_SYMBOL_EDIT "  Rename station", F_L, C_TEXT);
-    lv_obj_set_pos(t, 24, 24);
+    lv_obj_t *t = mkLabel(renOv, "Rename station", F_T26, C_TEXT);
+    lv_obj_set_pos(t, T_PAD_X, 22);
     renTa = textField(renOv, 20, 84, 520, 64, nullptr, nullptr);
     lv_textarea_set_max_length(renTa, sizeof(curSt.name) - 1);
-    textBtn(renOv, 552, 84, 112, 64, "Cancel", F_M, C_CARD3, onRenCancel);
-    textBtn(renOv, 674, 84, 106, 64, "Save", F_M, C_ACCENT, onRenOk);
+    textBtn(renOv, 552, 84, 112, 64, "Cancel", F_M, T->surfaceHi, onRenCancel);
+    textBtn(renOv, 674, 84, 106, 64, "Save", F_M, T->primary, onRenOk);
     keyboardFor(renOv, SCREEN_W, 270, renTa, onRenKb);
   }
   lv_textarea_set_text(renTa, curSt.name);

@@ -71,12 +71,12 @@ static void populateNetworks() {
     netOpen[netCount] = (WiFi.encryptionType(i) == WIFI_AUTH_OPEN);
     int rssi = WiFi.RSSI(i);
     lv_obj_t *row = listRow(wifiList, 736, 64);
-    char buf[40]; copyAscii(buf, sizeof(buf), s.c_str());
+    char buf[40]; copyText(buf, sizeof(buf), s.c_str());
     lv_obj_t *name = mkLabel(row, buf, F_M, C_TEXT);
     oneLine(name, 540, false);
     lv_obj_align(name, LV_ALIGN_LEFT_MID, 8, 0);
     uint32_t col = rssi > -60 ? C_GOOD : (rssi > -75 ? C_WARN : C_BAD);
-    lv_obj_t *sig = mkLabel(row, netOpen[netCount] ? LV_SYMBOL_WIFI " open" : LV_SYMBOL_WIFI, F_M, col);
+    lv_obj_t *sig = mkLabel(row, netOpen[netCount] ? "open  " LUCIDE_WIFI : LUCIDE_LOCK "  " LUCIDE_WIFI, I_20, col);
     lv_obj_align(sig, LV_ALIGN_RIGHT_MID, -8, 0);
     lv_obj_add_event_cb(row, onNetClick, LV_EVENT_CLICKED, (void *)(intptr_t)netCount);
     netCount++;
@@ -114,13 +114,13 @@ static void wifiTick(uint32_t now) {
     else if (n == WIFI_SCAN_FAILED) { scanning = false; lv_label_set_text(wifiStatus, "Scan failed - tap Scan"); }
   }
   if (netState == NET_BOOT) {
-    if (WiFi.status() == WL_CONNECTED) onWifiUp(AUTOPLAY_ON_BOOT);
+    if (WiFi.status() == WL_CONNECTED) onWifiUp(AUTOPLAY_ON_BOOT && prefs.getUChar("playing", 1));   // only if it was on
     else if (now - netT0 > 30000) {                         // saved network not there (yet): router rebooting after a
       netState = NET_NONE; netT0 = now;                       // power cut, slow mesh... keep the screens, retry quietly
       static bool told = false;
       if (!told) {
         told = true;
-        char m[96]; snprintf(m, sizeof(m), "Can't reach %s yet - retrying. Tap " LV_SYMBOL_WIFI " to change network.", selSSID.c_str());
+        char m[96]; snprintf(m, sizeof(m), "Can't reach %s yet - retrying. Settings > Wi-Fi to change network.", selSSID.c_str());
         uiToast(m, C_WARN);
       }
     }
@@ -150,24 +150,25 @@ static void wifiTick(uint32_t now) {
 static void buildWifi() {
   scrWifi = subScreen(nullptr, nullptr);
   wifiListView = clearBox(scrWifi, 0, 0, SCREEN_W, SCREEN_H);
-  lv_obj_t *title = mkLabel(wifiListView, LV_SYMBOL_WIFI "  Connect to Wi-Fi", F_L, C_TEXT);
-  lv_obj_set_pos(title, 32, 22);
+  // back button only when there's somewhere to go back to (showWifiScreen); the title starts after it either way
+  wifiBackBtn = roundBtn(wifiListView, T_PAD_X, 14, 48, LUCIDE_CHEVRON_LEFT, onWifiBack);
+  lv_obj_t *title = mkLabel(wifiListView, "Connect to Wi-Fi", F_T26, C_TEXT);
+  lv_obj_set_pos(title, 88, 16);
   wifiStatus = mkLabel(wifiListView, "", F_S, C_MUTED);
-  lv_obj_set_pos(wifiStatus, 34, 66);
-  wifiBackBtn = textBtn(wifiListView, 520, 12, 120, 56, LV_SYMBOL_LEFT " Back", F_M, C_CARD3, onWifiBack);
-  textBtn(wifiListView, 650, 12, 126, 56, LV_SYMBOL_REFRESH " Scan", F_M, C_ACCENT, onRescan);
+  lv_obj_set_pos(wifiStatus, 88, 52);
+  textBtn(wifiListView, SCREEN_W - T_PAD_X - 132, 14, 132, 52, LUCIDE_REFRESH_CW "  Scan", I_20, T->primary, onRescan);
   wifiList = scrollCol(wifiListView, 32, 96, 736, 364, 10);
 
   wifiPwView = clearBox(scrWifi, 0, 0, SCREEN_W, SCREEN_H);
   lv_obj_add_flag(wifiPwView, LV_OBJ_FLAG_HIDDEN);
-  textBtn(wifiPwView, 20, 14, 120, 56, LV_SYMBOL_LEFT " Back", F_M, C_CARD3, onPwBack);
-  wifiSsidLbl = mkLabel(wifiPwView, "", F_L, C_TEXT);
-  oneLine(wifiSsidLbl, 600, false);
-  lv_obj_set_pos(wifiSsidLbl, 160, 24);
+  roundBtn(wifiPwView, T_PAD_X, 14, 48, LUCIDE_CHEVRON_LEFT, onPwBack);
+  wifiSsidLbl = mkLabel(wifiPwView, "", F_T26, C_TEXT);
+  oneLine(wifiSsidLbl, 640, false);
+  lv_obj_set_pos(wifiSsidLbl, 88, 22);
   wifiTa = textField(wifiPwView, 20, 84, 560, 64, "Wi-Fi password", nullptr);
   lv_textarea_set_password_mode(wifiTa, true);
-  textBtn(wifiPwView, 592, 84, 72, 64, LV_SYMBOL_EYE_OPEN, F_M, C_CARD3, onEye);
-  textBtn(wifiPwView, 674, 84, 106, 64, "Join", F_M, C_ACCENT, onConnectBtn);
+  textBtn(wifiPwView, 592, 84, 72, 64, LUCIDE_EYE, I_24, T->surfaceHi, onEye);
+  textBtn(wifiPwView, 674, 84, 106, 64, "Join", F_M, T->primary, onConnectBtn);
   wifiPwStatus = mkLabel(wifiPwView, "", F_S, C_MUTED);
   lv_obj_set_pos(wifiPwStatus, 24, 158);
   wifiKb = keyboardFor(wifiPwView, SCREEN_W, 270, wifiTa, onKb);

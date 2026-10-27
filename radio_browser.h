@@ -71,7 +71,7 @@ static int rbFetch(const char *endpoint, const char *q, int n) {   // appends st
     int kbps = r["bitrate"] | 0;
     if (kbps) snprintf(det, sizeof(det), "%s  %s %d  %s", (const char *)(r["countrycode"] | ""), codec, kbps, tags.c_str());
     else snprintf(det, sizeof(det), "%s  %s  %s", (const char *)(r["countrycode"] | ""), codec, tags.c_str());
-    copyAscii(h.detail, sizeof(h.detail), det);
+    copyText(h.detail, sizeof(h.detail), det);
   }
   return n;
 }
@@ -156,7 +156,7 @@ static void radioPlacesFetch() {                              // netTask
         else if (nm.startsWith("The ")) nm = nm.substring(4);
         int paren = nm.indexOf(" (");
         if (paren > 0) nm = nm.substring(0, paren);
-        copyAscii(p.name, sizeof(p.name), nm.c_str());
+        copyText(p.name, sizeof(p.name), nm.c_str());
         p.count = cnt;
       }
       if (!home) { memmove(&rbPlaces[0], &rbPlaces[1], sizeof(RbCat) * (n - 1)); n--; }

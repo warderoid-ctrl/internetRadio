@@ -34,8 +34,8 @@ static SemaphoreHandle_t listMx;           // guards favs / recents / curSt (and
 #define LIST_UNLOCK() xSemaphoreGive(listMx)
 
 static void setStation(Station &s, const char *name, const char *tag, const char *url) {
-  copyAscii(s.name, sizeof(s.name), name);
-  copyAscii(s.tag, sizeof(s.tag), tag);
+  copyText(s.name, sizeof(s.name), name);
+  copyText(s.tag, sizeof(s.tag), tag);
   strlcpy(s.url, url, sizeof(s.url));
   s.logo[0] = 0;
   s.kind = 0;
@@ -129,7 +129,7 @@ static bool favToggleData(const Station &s) {
 // rename what's playing, its favourite and its recent entry
 static void renameData(const char *name) {
   LIST_LOCK();
-  copyAscii(curSt.name, sizeof(curSt.name), name);
+  copyText(curSt.name, sizeof(curSt.name), name);
   bool f = curStation >= 0, r = false;
   if (f) strlcpy(favs[curStation].name, curSt.name, sizeof(favs[0].name));
   for (int i = 0; i < nRecent; i++) if (!strcmp(recents[i].url, curSt.url)) { strlcpy(recents[i].name, curSt.name, sizeof(recents[0].name)); r = true; }

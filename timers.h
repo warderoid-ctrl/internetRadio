@@ -56,47 +56,45 @@ static void onAlarmDismiss(lv_event_t *) {
 }
 
 static void timersBuild(lv_obj_t *pg) {
-  for (int i = 0; i < 8; i++) {
+  pg = pageBody(pg, "Timers");
+  const int pw = (PAGE_W - 3 * 8) / 4;
+  for (int i = 0; i < 8; i++) {                               // presets: outlined pills, primary while pressed
     int c = i % 4, r = i / 4;
-    lv_obj_t *b = lv_button_create(pg);
-    lv_obj_set_pos(b, 12 + c * 174, 4 + r * 64);
-    lv_obj_set_size(b, 166, 56);
-    lv_obj_set_style_radius(b, 28, 0);
-    lv_obj_set_style_bg_color(b, lv_color_hex(C_CARD2), 0);
-    lv_obj_set_style_bg_color(b, lv_color_hex(C_ACCENT), LV_STATE_PRESSED);
-    lv_obj_set_style_shadow_width(b, 0, 0);
-    lv_obj_set_style_border_width(b, 0, 0);
     char t[48]; snprintf(t, sizeof(t), "%s  %d:%02d", PRESETS[i].name, PRESETS[i].secs / 60, PRESETS[i].secs % 60);
-    lv_obj_t *l = mkLabel(b, t, F_S, C_TEXT);
-    lv_obj_center(l);
-    lv_obj_add_event_cb(b, onPreset, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+    lv_obj_t *b = textBtn(pg, c * (pw + 8), r * 60, pw, 52, t, F_M, T->bg, onPreset, (void *)(intptr_t)i);
+    lv_obj_set_style_border_width(b, 1, 0);
+    lv_obj_set_style_border_color(b, lv_color_hex(T->outline), 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(T->primary), LV_STATE_PRESSED);
+    lv_obj_set_style_text_color(btnLabel(b), lv_color_hex(T->onPrimary), LV_STATE_PRESSED);
   }
+  const int cw = (PAGE_W - 2 * T_GAP) / N_SLOTS, cy = 124, ch = PAGE_H - cy;
   for (int i = 0; i < N_SLOTS; i++) {
-    lv_obj_t *c = card(pg, 12 + i * 232, 136, 224, 276);
+    lv_obj_t *c = container(pg, i * (cw + T_GAP), cy, cw, ch, T->surface);
     slotCard[i] = c;
     lv_obj_t *a = lv_arc_create(c);
     slotArc[i] = a;
-    lv_obj_set_size(a, 160, 160);
-    lv_obj_set_pos(a, 32, 10);
+    lv_obj_set_size(a, 150, 150);
+    lv_obj_set_pos(a, (cw - 150) / 2, 12);
     lv_arc_set_rotation(a, 270);
     lv_arc_set_bg_angles(a, 0, 360);
     lv_arc_set_range(a, 0, 1000);
     lv_arc_set_value(a, 0);
     lv_obj_remove_style(a, NULL, LV_PART_KNOB);
     lv_obj_remove_flag(a, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_arc_width(a, 12, LV_PART_MAIN);
-    lv_obj_set_style_arc_width(a, 12, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_color(a, lv_color_hex(C_CARD3), LV_PART_MAIN);
-    lv_obj_set_style_arc_color(a, lv_color_hex(C_ACCENT), LV_PART_INDICATOR);
-    slotTime[i] = mkLabel(c, "--:--", F_L, C_MUTED);
-    lv_obj_align(slotTime[i], LV_ALIGN_TOP_MID, 0, 74);
+    lv_obj_set_style_arc_width(a, 10, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(a, 10, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(a, lv_color_hex(T->selected), LV_PART_MAIN);
+    lv_obj_set_style_arc_color(a, lv_color_hex(T->primary), LV_PART_INDICATOR);
+    slotTime[i] = mkLabel(c, "--:--", F_T26, C_MUTED);
+    lv_obj_align(slotTime[i], LV_ALIGN_TOP_MID, 0, 72);
     slotName[i] = mkLabel(c, "Free", F_S, C_MUTED);
-    lv_obj_set_width(slotName[i], 200);
+    lv_obj_set_width(slotName[i], cw - 24);
     lv_obj_set_style_text_align(slotName[i], LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(slotName[i], LV_LABEL_LONG_DOT);
-    lv_obj_set_pos(slotName[i], 12, 180);
-    textBtn(c, 14, 216, 100, 48, "+1 min", F_S, C_CARD3, onSlotPlus, (void *)(intptr_t)i);
-    textBtn(c, 122, 216, 88, 48, "Stop", F_S, C_CARD3, onSlotStop, (void *)(intptr_t)i);
+    lv_obj_set_pos(slotName[i], 12, 172);
+    int bw = (cw - 32 - 8) / 2;
+    textBtn(c, 16, ch - 16 - 48, bw, 48, LUCIDE_PLUS " 1 min", I_20, T->surfaceHi, onSlotPlus, (void *)(intptr_t)i);
+    textBtn(c, 24 + bw, ch - 16 - 48, bw, 48, LUCIDE_X " Stop", I_20, T->surfaceHi, onSlotStop, (void *)(intptr_t)i);
   }
 }
 
@@ -110,18 +108,16 @@ static void alarmBuild() {
   lv_obj_set_style_border_width(alarmOv, 0, 0);
   lv_obj_remove_flag(alarmOv, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_flag(alarmOv, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_t *c = panel(alarmOv, 120, 100, 560, 280, C_CARD, 36);
-  lv_obj_set_style_border_width(c, 4, 0);
-  lv_obj_set_style_border_color(c, lv_color_hex(C_ACCENT), 0);
-  lv_obj_t *bell = mkLabel(c, LV_SYMBOL_BELL, F_XL, C_ACCENT);
-  lv_obj_align(bell, LV_ALIGN_TOP_MID, 0, 22);
-  alarmLbl = mkLabel(c, "Timer done!", F_L, C_TEXT);
+  lv_obj_t *c = container(alarmOv, 120, 100, 560, 280, T->primary);
+  uint32_t on = T->onPrimary;
+  lv_obj_t *bell = mkLabel(c, LUCIDE_ALARM_CLOCK, I_28, on);
+  lv_obj_align(bell, LV_ALIGN_TOP_MID, 0, 28);
+  alarmLbl = mkLabel(c, "Timer done!", F_T34, on);
   lv_obj_set_width(alarmLbl, 520);
   lv_obj_set_style_text_align(alarmLbl, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(alarmLbl, LV_ALIGN_TOP_MID, 0, 96);
-  lv_obj_t *b = textBtn(c, 130, 168, 300, 90, "DISMISS", F_L, C_ACCENT, onAlarmDismiss);
-  lv_obj_set_style_bg_grad_color(b, lv_color_hex(C_ACCENT2), 0);
-  lv_obj_set_style_bg_grad_dir(b, LV_GRAD_DIR_VER, 0);
+  lv_obj_align(alarmLbl, LV_ALIGN_TOP_MID, 0, 82);
+  lv_obj_t *b = textBtn(c, 130, 164, 300, 84, "Dismiss", F_T22, T->surface, onAlarmDismiss);   // the one action, on the card
+  pressStyle(b, 22);
 }
 
 // 5 Hz: update arcs, ring when done. Returns true if any timer is active (for the header chip)
@@ -160,7 +156,7 @@ static bool timersTick(char *chip, size_t chipN) {
     lv_arc_set_value(slotArc[i], (int)(1000L - (int64_t)left * 1000 / (int32_t)s.totalMs));
   }
   if (anyRinging && now - lastRing > 1800) { lastRing = now; beep(3); }
-  if (any) { char b[12]; fmtMMSS((uint32_t)soonest, b, sizeof(b)); snprintf(chip, chipN, LV_SYMBOL_BELL " %s", b); (void)soonName; }
+  if (any) { fmtMMSS((uint32_t)soonest, chip, chipN); (void)soonName; }   // callers add the timer icon
   return any;
 }
 

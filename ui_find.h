@@ -11,7 +11,7 @@ static int luckyGenre = 0;
 
 static void findLayout(bool kb) {
   bool srch = (findTab == 0);
-  for (int t = 0; t < 3; t++) btnFill(findTabBtn[t], t == findTab ? C_ACCENT : C_CARD3);
+  for (int t = 0; t < 3; t++) btnFill(findTabBtn[t], t == findTab ? T->secondary : T->surfaceHi);
   if (srch) lv_obj_remove_flag(findSearchBox, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(findSearchBox, LV_OBJ_FLAG_HIDDEN);
   if (findTab == 1) lv_obj_remove_flag(findGenres, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(findGenres, LV_OBJ_FLAG_HIDDEN);
   if (findTab == 2) lv_obj_remove_flag(findPlaces, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(findPlaces, LV_OBJ_FLAG_HIDDEN);
@@ -37,7 +37,7 @@ static void findSearch() {
   findLayout(false);
 }
 static void findFavLabel(lv_obj_t *btn, const Station &s) {
-  lv_label_set_text(btnLabel(btn), favFind(s.url) >= 0 ? LV_SYMBOL_OK : LV_SYMBOL_PLUS);
+  lv_label_set_text(btnLabel(btn), favFind(s.url) >= 0 ? LUCIDE_HEART : LUCIDE_PLUS);
 }
 static void onFindFav(lv_event_t *e) {
   const Station &s = rbHits[(intptr_t)lv_event_get_user_data(e)].s;
@@ -54,13 +54,14 @@ static void findPlay(const Station &s) {
 }
 static void onFindPlay(lv_event_t *e) { findPlay(rbHits[(intptr_t)lv_event_get_user_data(e)].s); }
 
-// highlight one chip / card in a row of them (restyle only: runs inside their click event)
+// highlight one chip / card in a row of them: secondary fill, like a selected chip (restyle only: runs inside their
+// click event)
 static void findMark(lv_obj_t *parent, int sel) {
   for (int i = 0; i < (int)lv_obj_get_child_count(parent); i++) {
     lv_obj_t *b = lv_obj_get_child(parent, i);
-    lv_obj_set_style_border_color(b, lv_color_hex(C_ACCENT), 0);
-    lv_obj_set_style_border_width(b, i == sel ? 3 : 0, 0);
-    lv_obj_set_style_bg_color(b, lv_color_hex(i == sel ? C_CARD3 : C_CARD2), 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(i == sel ? T->secondary : T->surface), 0);
+    for (int k = 0; k < (int)lv_obj_get_child_count(b); k++)
+      lv_obj_set_style_text_color(lv_obj_get_child(b, k), lv_color_hex(i == sel ? T->onSecondary : (k ? T->muted : T->text)), 0);
   }
 }
 static void onGenre(lv_event_t *e) {
@@ -80,10 +81,11 @@ static void onPlace(lv_event_t *e) {
 static lv_obj_t *findChip(lv_obj_t *parent, int w, int h) {
   lv_obj_t *b = lv_button_create(parent);
   lv_obj_set_size(b, w, h);
-  lv_obj_set_style_bg_color(b, lv_color_hex(C_CARD2), 0);
+  lv_obj_set_style_bg_color(b, lv_color_hex(T->surface), 0);
   lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(b, 18, 0);
   lv_obj_set_style_shadow_width(b, 0, 0);
+  lv_obj_set_style_border_width(b, 0, 0);
+  pressStyle(b, h >= 100 ? T_R_TILE : LV_RADIUS_CIRCLE);    // country cards: tiles; genre chips: pills
   return b;
 }
 static void findPlacesBuild() {
@@ -96,8 +98,8 @@ static void findPlacesBuild() {
     lv_label_set_long_mode(n, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_max_height(n, 80, 0);
     lv_obj_align(n, LV_ALIGN_TOP_LEFT, 0, 0);
-    lv_obj_t *c = mkLabel(b, "", F_XS, i == 0 ? C_ACCENT : C_MUTED);
-    lv_label_set_text_fmt(c, i == 0 ? "Home  -  %d stations" : "%d stations", rbPlaces[i].count);
+    lv_obj_t *c = mkLabel(b, "", F_XS, C_MUTED);
+    lv_label_set_text_fmt(c, i == 0 ? "Home \xC2\xB7 %d stations" : "%d stations", rbPlaces[i].count);
     lv_obj_align(c, LV_ALIGN_BOTTOM_LEFT, 0, 0);
     lv_obj_add_event_cb(b, onPlace, LV_EVENT_CLICKED, (void *)(intptr_t)i);
   }
@@ -143,13 +145,13 @@ static void findTick(lv_timer_t *) {
   }
   if (rbN < 0) { lv_label_set_text(findStatus, "Couldn't load stations - check Wi-Fi and try again"); return; }
   if (rbN == 0) { lv_label_set_text(findStatus, "Nothing found - try another name, town or genre"); return; }
-  lv_label_set_text_fmt(findStatus, "%d stations - tap to play, " LV_SYMBOL_PLUS " to keep", rbN);
+  lv_label_set_text_fmt(findStatus, "%d stations: tap to play, + to keep", rbN);
   for (int i = 0; i < rbN; i++) {
     lv_obj_t *row = listRow(findList, 736, 72);
     artImage(row, 0, 0, rbHits[i].s.logo);
     rowText(row, 74, 560, rbHits[i].s.name, rbHits[i].detail);
     lv_obj_add_event_cb(row, onFindPlay, LV_EVENT_CLICKED, (void *)(intptr_t)i);
-    lv_obj_t *fb = textBtn(row, 650, 9, 64, 46, "", F_M, C_CARD3, onFindFav, (void *)(intptr_t)i);
+    lv_obj_t *fb = textBtn(row, 660, 8, 56, 48, "", I_20, T->surfaceHi, onFindFav, (void *)(intptr_t)i);
     findFavLabel(fb, rbHits[i].s);
   }
 }
@@ -175,16 +177,14 @@ static lv_obj_t *findStrip(int flow) {                   // horizontally swiping
 }
 static void findBuild() {
   scrFind = subScreen(nullptr, nullptr);
-  textBtn(scrFind, 20, 14, 112, 56, LV_SYMBOL_LEFT " Back", F_M, C_CARD3, onFindBack);
-  static const char *tabs[3] = {LV_SYMBOL_EDIT " Search", "Genres", LV_SYMBOL_GPS " Places"};
-  for (int t = 0; t < 3; t++) findTabBtn[t] = textBtn(scrFind, 146 + t * 142, 14, 134, 56, tabs[t], F_S, C_CARD3, onFindTab, (void *)(intptr_t)t);
-  lv_obj_t *lucky = textBtn(scrFind, 582, 14, 198, 56, LV_SYMBOL_SHUFFLE "  Feeling lucky", F_S, C_ACCENT, onLucky);
-  lv_obj_set_style_bg_grad_color(lucky, lv_color_hex(C_ACCENT2), 0);
-  lv_obj_set_style_bg_grad_dir(lucky, LV_GRAD_DIR_VER, 0);
+  roundBtn(scrFind, T_PAD_X, 14, 48, LUCIDE_CHEVRON_LEFT, onFindBack);
+  static const char *tabs[3] = {LUCIDE_SEARCH " Search", LUCIDE_MUSIC " Genres", LUCIDE_GLOBE " Places"};
+  for (int t = 0; t < 3; t++) findTabBtn[t] = textBtn(scrFind, 88 + t * 142, 12, 134, 52, tabs[t], I_20, T->surfaceHi, onFindTab, (void *)(intptr_t)t);
+  textBtn(scrFind, 520, 12, SCREEN_W - T_PAD_X - 520, 52, LUCIDE_SHUFFLE "  Feeling lucky", I_20, T->primary, onLucky);
 
   findSearchBox = clearBox(scrFind, 0, 80, SCREEN_W, 74);
   findTa = textField(findSearchBox, 20, 4, 644, 64, "Name, town or genre: KEXP, BBC, Paris, jazz...", onFindTa);
-  textBtn(findSearchBox, 674, 4, 106, 64, "Search", F_M, C_ACCENT, onFindSearchBtn);
+  textBtn(findSearchBox, 674, 4, 106, 64, LUCIDE_SEARCH, I_24, T->primary, onFindSearchBtn);
 
   findGenres = findStrip(LV_FLEX_FLOW_COLUMN_WRAP);       // 3 rows of genre chips, swipe sideways for more
   for (int g = 0; g < N_GENRES; g++) {

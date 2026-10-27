@@ -25,7 +25,7 @@ static void audioCmd(AudioCmdType t, int a = 0, const char *s = nullptr) {
 }
 static void setNowPlayingText(const char *t) {               // any task: the "artist - title" line
   if (xSemaphoreTake(metaMx, 100) == pdTRUE) {
-    copyAscii(metaTitle, sizeof(metaTitle), t);
+    copyText(metaTitle, sizeof(metaTitle), t);
     metaDirty = true;
     xSemaphoreGive(metaMx);
   }
@@ -56,6 +56,8 @@ static void audioTask(void *) {
   AudioCmd c;
   static char radioUrl[256];                                 // the station being played (for resume / reconnect)
   uint32_t connT = 0, retryT = 0;
+  uint32_t starveT = 0;                                      // since when the input buffer has been (nearly) empty
+  uint32_t seekAfter = 0;                                    // episode reconnected after a drop: jump back here
   for (;;) {
     while (xQueueReceive(cmdQ, &c, 0) == pdTRUE) {
       switch (c.type) {
@@ -63,6 +65,7 @@ static void audioTask(void *) {
           strlcpy(radioUrl, c.str, sizeof(radioUrl));
           playKind = (uint8_t)c.arg;
           posSec = durSec = 0;
+          seekAfter = 0; starveT = 0;
           audio.stopSong(); audioMode = 0; wantPlaying = true; playState = 1; connT = millis();
           if (!audio.connecttohost(radioUrl)) playState = 3;
           break;
@@ -93,15 +96,34 @@ static void audioTask(void *) {
         if (!audio.connecttohost(radioUrl)) playState = 3;
       }
     }
-    // reconnect watchdog: stuck connecting for 15 s, or dropped -> retry every 6 s
+    // reconnect watchdog: only a pause (AC_STOP clears wantPlaying) stops it. Retries every 6 s, for ever, when:
+    //  - connecting takes over 15 s, or the stream ends / errors (playState 3, set by onAudioEvent too)
+    //  - the decoder stops running while it should be playing
+    //  - it stalls silently: the input buffer stays (nearly) empty for 8 s (Wi-Fi blip, server hiccup)
     if (wantPlaying && audioMode == 0 && radioUrl[0]) {
-      if (playState == 1 && millis() - connT > 15000) playState = 3;
-      if (playState == 3 && millis() - retryT > 6000) {
-        retryT = millis(); playState = 1; connT = millis();
+      uint32_t now = millis();
+      bool flowing = audio.isRunning() && audio.inBufferFilled() > 4096;
+      if (playState == 1 && flowing && now - connT > 1500) playState = 2;   // don't rely on one log message
+      if (playState == 1 && now - connT > 15000) { Serial.println("audio: connect timed out, retrying"); playState = 3; }
+      if (playState == 2) {
+        if (!audio.isRunning()) { Serial.println("audio: player stopped, reconnecting"); playState = 3; }
+        else if (audio.inBufferFilled() < 1024) {
+          if (!starveT) starveT = now;
+          else if (now - starveT > 8000) { Serial.println("audio: stream stalled, reconnecting"); playState = 3; }
+        } else starveT = 0;
+      }
+      if (playState == 3 && now - retryT > 6000) {
+        retryT = now; playState = 1; connT = now; starveT = 0;
+        if (playKind == 1 && posSec > 5) seekAfter = posSec;  // an episode: carry on where it dropped
         audio.stopSong();
         if (!audio.connecttohost(radioUrl)) playState = 3;
       }
-    }
+      if (seekAfter && playState == 2 && audio.getAudioFileDuration()) {
+        uint32_t at = audio.getAudioCurrentTime();
+        if (seekAfter > at) audio.setTimeOffset((int)(seekAfter - at));
+        seekAfter = 0;
+      }
+    } else starveT = 0;
     audio.loop();
     static uint32_t posT = 0;
     if (playKind == 1 && millis() - posT > 500) { posT = millis(); posSec = audio.getAudioCurrentTime(); durSec = audio.getAudioFileDuration(); }
