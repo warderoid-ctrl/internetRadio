@@ -16,19 +16,29 @@ extern "C" { extern const lv_font_t font_clock_xl; extern const lv_font_t font_n
 #define F_CLK (&font_clock_xl)
 #define F_NUM (&font_num_lg)
 
-// ───────────── palette ─────────────
-#define C_BG      0x0B0C10
-#define C_CARD    0x15171F
-#define C_CARD2   0x1E212C
-#define C_CARD3   0x2A2E3D
-#define C_TEXT    0xF2F3F7
-#define C_MUTED   0x8B90A0
-#define C_ACCENT  0xFF6B3D
-#define C_ACCENT2 0xFF3D6E
-#define C_GOOD    0x3DDC97
-#define C_WARN    0xFFC145
-#define C_BAD     0xFF5C5C
-#define C_BLUE    0x5CB8FF
+// ───────────── palette: Tonal theme roles (tonal_theme.h), dark or light, chosen at boot ─────────────
+// The old names map onto roles while the screens are migrated; new code should use T->role directly.
+#include "tonal_theme.h"
+#define C_BG      (T->bg)
+#define C_CARD    (T->surface)          // cards
+#define C_CARD2   (T->surface)          // list rows, text fields (mostly sit on bg)
+#define C_CARD3   (T->selected)         // secondary buttons, highlights, slider tracks: visible on bg and surface
+#define C_TEXT    (T->text)
+#define C_MUTED   (T->muted)
+#define C_ACCENT  (T->primary)
+#define C_ACCENT2 (T->primary)          // was the gradient end: Tonal has no gradients, so fills are flat
+#define C_GOOD    (T->good)
+#define C_WARN    (T->warn)
+#define C_BAD     (T->bad)
+#define C_BLUE    (T->secondary)
+// text / icon colour to put on a fill: a role's "on" colour, otherwise the normal text colour
+static uint32_t onFill(uint32_t bg) {
+  if (bg == T->primary) return T->onPrimary;
+  if (bg == T->secondary) return T->onSecondary;
+  if (bg == T->tertiary) return T->onTertiary;
+  if (bg == T->talk) return T->onTalk;
+  return T->text;
+}
 
 #define SCREEN_W 800
 #define SCREEN_H 480
@@ -115,12 +125,17 @@ static lv_obj_t *textBtn(lv_obj_t *parent, int x, int y, int w, int h, const cha
   lv_obj_set_style_radius(b, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_shadow_width(b, 0, 0);
   lv_obj_set_style_border_width(b, 0, 0);
-  lv_obj_t *l = mkLabel(b, txt, f, C_TEXT);
+  lv_obj_t *l = mkLabel(b, txt, f, onFill(bg));
   lv_obj_center(l);
   if (cb) lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, ud);
   return b;
 }
 static lv_obj_t *btnLabel(lv_obj_t *btn) { return lv_obj_get_child(btn, 0); }
+// recolour a textBtn (selected tab etc.): fill + matching label colour
+static void btnFill(lv_obj_t *btn, uint32_t bg) {
+  lv_obj_set_style_bg_color(btn, lv_color_hex(bg), 0);
+  lv_obj_set_style_text_color(btnLabel(btn), lv_color_hex(onFill(bg)), 0);
+}
 // keep a label on one line: LONG_DOT / scrolling only work once the height is fixed (else LVGL wraps the text)
 static void oneLine(lv_obj_t *l, int w, bool scroll) {
   lv_obj_set_width(l, w);
@@ -230,7 +245,7 @@ static void wxDraw(lv_obj_t *c, uint8_t kind, bool night) {
   lv_obj_clean(c);
   int S = lv_obj_get_width(c);
   uint32_t sunCol = night ? 0xE6EAF7 : 0xFFC145;
-  uint32_t cloudCol = 0xC9CFDD, darkCloud = 0x8E97AD;
+  uint32_t cloudCol = T->muted, darkCloud = T->outline;
   auto sun = [&](int x, int y, int d) {
     lv_obj_t *s = dot(c, x, y, d, sunCol);
     lv_obj_set_style_shadow_width(s, d / 2, 0);
@@ -254,7 +269,7 @@ static void wxDraw(lv_obj_t *c, uint8_t kind, bool night) {
       for (int i = 0; i < 3; i++) dot(c, S * (24 + i * 22) / 100, S * (72 + (i % 2) * 10) / 100, S * 10 / 100 + 1, 0xFFFFFF);
       break; }
     case WX_STORM: {
-      wxDrawCloud(c, S, 0, 0, 1.0f, 0x6E7791);
+      wxDrawCloud(c, S, 0, 0, 1.0f, T->outline);
       lv_obj_t *b = mkLabel(c, LV_SYMBOL_CHARGE, S >= 60 ? F_L : F_S, C_WARN);
       lv_obj_set_pos(b, S * 38 / 100, S * 56 / 100);
       break; }

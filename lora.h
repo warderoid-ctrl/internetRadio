@@ -139,7 +139,7 @@ static void onExitHub(lv_event_t *) {
 
 static void loraBuild() {
   scrLora = lv_obj_create(NULL);
-  lv_obj_set_style_bg_color(scrLora, lv_color_hex(0x07090B), 0);
+  lv_obj_set_style_bg_color(scrLora, lv_color_hex(C_BG), 0);
   lv_obj_remove_flag(scrLora, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_t *t = mkLabel(scrLora, LV_SYMBOL_WIFI "  SURVIVAL MESH", F_L, C_GOOD);
   lv_obj_set_pos(t, 16, 12);

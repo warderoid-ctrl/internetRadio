@@ -177,8 +177,6 @@ static void setBootMode(int m) { bootMode = m; prefs.putUChar("mode", (uint8_t)m
 static void overlaysBuild() {
   toastBox = panel(lv_layer_top(), 120, 8, 560, 56, C_CARD, 28);
   lv_obj_set_style_border_width(toastBox, 3, 0);
-  lv_obj_set_style_shadow_width(toastBox, 30, 0);
-  lv_obj_set_style_shadow_opa(toastBox, LV_OPA_50, 0);
   toastLbl = mkLabel(toastBox, "", F_M, C_TEXT);
   oneLine(toastLbl, 520, false);
   lv_obj_set_style_text_align(toastLbl, LV_TEXT_ALIGN_CENTER, 0);
@@ -260,12 +258,9 @@ static void buildChrome(lv_obj_t *scr) {
   lv_obj_set_style_bg_color(mic, lv_color_hex(C_ACCENT), 0);
   lv_obj_set_style_bg_grad_color(mic, lv_color_hex(C_ACCENT2), 0);
   lv_obj_set_style_bg_grad_dir(mic, LV_GRAD_DIR_VER, 0);
-  lv_obj_set_style_shadow_width(mic, 24, 0);
-  lv_obj_set_style_shadow_color(mic, lv_color_hex(C_ACCENT), 0);
-  lv_obj_set_style_shadow_opa(mic, LV_OPA_40, 0);
   lv_obj_set_style_border_width(mic, 0, 0);
   lv_obj_add_event_cb(mic, onMicBtn, LV_EVENT_CLICKED, nullptr);
-  drawMic(mic, 29, 27, 40, C_TEXT);
+  drawMic(mic, 29, 27, 40, onFill(C_ACCENT));
   for (int i = 0; i < N_PAGES; i++) {
     pages[i] = clearBox(scr, PAGE_X, PAGE_Y, PAGE_W, PAGE_H);
     lv_obj_add_flag(pages[i], LV_OBJ_FLAG_HIDDEN);
@@ -369,6 +364,7 @@ static void *tlsCalloc(size_t n, size_t sz) {
 
 void setup() {
   Serial.begin(115200);
+  themeLoad();                                               // Tonal dark / light (NVS "ui"/"theme"): before any screen exists
   mbedtls_platform_set_calloc_free(tlsCalloc, free);
   // The audio task (core 0) can keep that core busy for > 5 s on HLS streams (BBC), starving its idle task; the task
   // watchdog would then reboot the hub. Wi-Fi runs at higher priority and nothing else on core 0 needs the idle task.
@@ -423,6 +419,8 @@ void setup() {
   disp = lv_display_create(SCREEN_W, SCREEN_H);
   lv_display_set_flush_cb(disp, dispFlush);
   lv_display_set_buffers(disp, drawBuf, nullptr, bufBytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
+  lv_display_set_theme(disp, lv_theme_default_init(disp, lv_color_hex(T->primary), lv_color_hex(T->secondary),
+                                                   themeMode == THEME_MODE_DARK, F_M));
   lv_indev_t *indev = lv_indev_create();
   lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
   lv_indev_set_read_cb(indev, touchRead);
@@ -480,7 +478,7 @@ void setup() {
   }
 }
 
-// serial console for testing from a PC (115200): play <url>, ep <url>, seek <+/-s>, pos, mic
+// serial console for testing from a PC (115200): play <url>, ep <url>, seek <+/-s>, pos, mic, remote, theme dark|light
 static void serialTick() {
   static char line[300];
   static size_t n = 0;
@@ -501,6 +499,8 @@ static void serialTick() {
       voiceReq = true;
     } else if (!strcmp(line, "remote")) {                            // the phone remote's address (with its token)
       Serial.printf("remote: http://%s/?k=%s\n", WiFi.localIP().toString().c_str(), remoteToken.c_str());
+    } else if (!strcmp(line, "theme dark") || !strcmp(line, "theme light")) {   // saves and restarts
+      themeSet(line[6] == 'l' ? THEME_MODE_LIGHT : THEME_MODE_DARK);
     } else if (!strcmp(line, "pos")) {
       Serial.printf("pos %u / %u s, state %u\n", (unsigned)posSec, (unsigned)durSec, (unsigned)playState);
     }

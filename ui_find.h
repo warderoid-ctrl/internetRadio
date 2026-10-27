@@ -11,7 +11,7 @@ static int luckyGenre = 0;
 
 static void findLayout(bool kb) {
   bool srch = (findTab == 0);
-  for (int t = 0; t < 3; t++) lv_obj_set_style_bg_color(findTabBtn[t], lv_color_hex(t == findTab ? C_ACCENT : C_CARD3), 0);
+  for (int t = 0; t < 3; t++) btnFill(findTabBtn[t], t == findTab ? C_ACCENT : C_CARD3);
   if (srch) lv_obj_remove_flag(findSearchBox, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(findSearchBox, LV_OBJ_FLAG_HIDDEN);
   if (findTab == 1) lv_obj_remove_flag(findGenres, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(findGenres, LV_OBJ_FLAG_HIDDEN);
   if (findTab == 2) lv_obj_remove_flag(findPlaces, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(findPlaces, LV_OBJ_FLAG_HIDDEN);

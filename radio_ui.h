@@ -184,7 +184,7 @@ static void carouselRebuild() {
   lv_obj_set_user_data(f, (void *)(intptr_t)CARD_NONE);
   lv_obj_set_style_bg_grad_color(f, lv_color_hex(C_ACCENT2), 0);
   lv_obj_set_style_bg_grad_dir(f, LV_GRAD_DIR_VER, 0);
-  lv_obj_t *fl = mkLabel(f, LV_SYMBOL_PLUS "\nFind\nstations", F_M, C_TEXT);
+  lv_obj_t *fl = mkLabel(f, LV_SYMBOL_PLUS "\nFind\nstations", F_M, onFill(C_ACCENT));
   lv_obj_set_style_text_align(fl, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_center(fl);
   lv_obj_add_event_cb(f, onFindStations, LV_EVENT_CLICKED, nullptr);
@@ -242,9 +242,6 @@ static void radioBuild(lv_obj_t *pg) {
   lblPlay = btnLabel(play);
   lv_obj_set_style_bg_grad_color(play, lv_color_hex(C_ACCENT2), 0);
   lv_obj_set_style_bg_grad_dir(play, LV_GRAD_DIR_VER, 0);
-  lv_obj_set_style_shadow_width(play, 40, 0);
-  lv_obj_set_style_shadow_color(play, lv_color_hex(C_ACCENT), 0);
-  lv_obj_set_style_shadow_opa(play, LV_OPA_40, 0);
   lblNext = btnLabel(textBtn(c, 232, 150, 76, 76, LV_SYMBOL_NEXT, F_L, C_CARD3, onNext));
 
   lblTime = mkLabel(c, "", F_XS, C_MUTED);

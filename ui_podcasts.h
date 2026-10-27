@@ -8,7 +8,7 @@ static bool pcInShow = false;                           // showing one show's ep
 static char pcShowName[64];
 
 static void pcLayout(bool kb) {
-  for (int t = 0; t < 3; t++) lv_obj_set_style_bg_color(pcTabBtn[t], lv_color_hex(t == pcTab ? C_ACCENT : C_CARD3), 0);
+  for (int t = 0; t < 3; t++) btnFill(pcTabBtn[t], t == pcTab ? C_ACCENT : C_CARD3);
   bool find = (pcTab == 2 && !pcInShow);
   if (find) lv_obj_remove_flag(pcSearchBox, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(pcSearchBox, LV_OBJ_FLAG_HIDDEN);
   int y = find ? 150 : 90;
