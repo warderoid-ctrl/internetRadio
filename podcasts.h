@@ -1,7 +1,9 @@
 #pragma once
-// Podcasts: saved shows (/pods.json), Apple's podcast directory for search (no key), episodes read straight from the
-// show's RSS feed. SoundCloud accounts publish such feeds too (Benji B, The Lot Radio). netTask does the fetching.
-// You follow shows; "New" merges the latest episodes of every followed show (refreshed every few hours).
+// Podcasts: followed shows (/pods.json), Apple's podcast directory for search (no key), episodes read straight from
+// the show's RSS feed. SoundCloud accounts publish such feeds too (Benji B, The Lot Radio). "New" merges the latest
+// episodes of every followed show (refreshed every few hours).
+// Threading: pods / eps / podHits are the UI's; netTask fills its own buffers and hands them over the same way as
+// radio_browser.h (want / done request numbers), so the UI never sees a half-written list.
 
 struct Pod { char name[64]; char author[48]; char feed[256]; char art[160]; };   // art: cover image URL
 #define MAX_PODS 20
@@ -10,37 +12,43 @@ static const struct { const char *name, *author, *feed; } DEFAULT_PODS[] = {
   {"Benji B",       "Weekly show (SoundCloud)",   "https://feeds.soundcloud.com/users/soundcloud:users:11122/sounds.rss"},
   {"The Lot Radio", "Brooklyn sets (SoundCloud)", "https://feeds.soundcloud.com/users/soundcloud:users:90833894/sounds.rss"},
 };
-static Pod *pods = nullptr;                                   // PSRAM
+static Pod *pods = nullptr;                                   // followed shows (PSRAM; changed by the UI under listMx)
 static int nPods = 0;
 
+// one show's episodes
 struct Episode { char title[96]; char when[24]; char url[256]; };
 #define MAX_EPS 30
-static Episode *eps = nullptr;                                // PSRAM
-static volatile int nEps = 0;                                 // -1 = feed failed
-static volatile uint8_t epVer = 0;
-static char epFeed[256];
-static char epArt[160];                                      // cover of the show being browsed
-static volatile bool reqEpisodes = false;
+static Episode *epIn = nullptr, *eps = nullptr;               // netTask's buffer / the UI's copy (PSRAM)
+static volatile int epInN = 0;                                // -1 = feed failed
+static int nEps = 0;
+static char epFeed[256];                                      // request: the show's feed
+static char epInArt[160], epArt[160];                         // cover found in that feed (netTask's / the UI's)
+static volatile uint16_t epWant = 0, epDone = 0;
 
+// directory search
 #define POD_HITS 20
-static Pod *podHits = nullptr;                                // search results (PSRAM)
-static volatile int nPodHits = 0;                             // -1 = search failed
-static volatile uint8_t podHitVer = 0;
+static Pod *podIn = nullptr, *podHits = nullptr;              // netTask's buffer / the UI's copy (PSRAM)
+static volatile int podInN = 0;                               // -1 = search failed
+static int nPodHits = 0;
 static char podQuery[48];
-static volatile bool reqPodSearch = false;
+static volatile uint16_t podWant = 0, podDone = 0;
 
 // "New": latest episodes across followed shows, newest first
 struct NewEp { Episode e; char show[48]; char art[160]; uint32_t day; };   // day = yyyymmdd, for sorting
 #define MAX_NEW 40
 #define NEW_PER_SHOW 3
 #define NEW_PATH "/newEps.json"
-static NewEp *newEps = nullptr;                               // PSRAM
+static NewEp *newEps = nullptr;                               // PSRAM; netTask replaces it under DATA_LOCK
 static volatile int nNew = 0;
 static volatile uint8_t newVer = 0;
 static volatile bool reqNewEps = false;
 static volatile bool newLoading = false;
+struct PodArt { char feed[256]; char art[160]; };             // covers found while refreshing "New", for the UI to keep
+static PodArt *newArt = nullptr;
+static volatile int nNewArt = 0;
+static volatile bool newArtReady = false;
 
-// played episodes: small ring of URL hashes in NVS, so "New" can mark what you haven't heard
+// played episodes: small ring of URL hashes in NVS, so "New" can mark what you haven't heard (UI only)
 #define MAX_PLAYED 100
 static uint32_t played[MAX_PLAYED];
 static int nPlayed = 0, playedPos = 0;
@@ -59,7 +67,8 @@ static void podMarkPlayed(const char *url) {
   prefs.putUShort("playedPos", playedPos);
 }
 
-static void podsSave() {
+// ───────────── followed shows ─────────────
+static void podsSave() {                                      // UI
   File f = LittleFS.open(PODS_PATH, "w");
   if (!f) return;
   JsonDocument d;
@@ -74,6 +83,33 @@ static void setPod(Pod &p, const char *name, const char *author, const char *fee
   strlcpy(p.feed, feed, sizeof(p.feed));
   p.art[0] = 0;
 }
+static int podFind(const char *feed) {
+  for (int i = 0; i < nPods; i++) if (!strcmp(pods[i].feed, feed)) return i;
+  return -1;
+}
+static bool podToggle(const Pod &p) {                        // UI: follow / unfollow; true if followed afterwards
+  LIST_LOCK();
+  int i = podFind(p.feed);
+  bool ok = true;
+  if (i >= 0) { memmove(&pods[i], &pods[i + 1], sizeof(Pod) * (nPods - i - 1)); nPods--; }
+  else if (nPods < MAX_PODS) pods[nPods++] = p;
+  else ok = false;
+  LIST_UNLOCK();
+  if (!ok) return false;
+  podsSave();
+  reqNewEps = true;                                           // refresh "New" for the changed follow list
+  return i < 0;
+}
+static void podArtApply(const char *feed, const char *art) { // UI: keep a cover found in a show's feed
+  if (!art[0]) return;
+  LIST_LOCK();
+  int i = podFind(feed);
+  bool changed = i >= 0 && strcmp(pods[i].art, art);
+  if (changed) strlcpy(pods[i].art, art, sizeof(pods[0].art));
+  LIST_UNLOCK();
+  if (changed) podsSave();
+}
+
 static uint32_t dayKey(const char *when) {                    // "21 Oct 2026" -> 20261021
   static const char *M = "JanFebMarAprMayJunJulAugSepOctNovDec";
   int d = 0, y = 0; char mon[4] = "";
@@ -81,7 +117,7 @@ static uint32_t dayKey(const char *when) {                    // "21 Oct 2026" -
   const char *p = strstr(M, mon);
   return (uint32_t)y * 10000 + (p ? (p - M) / 3 + 1 : 0) * 100 + d;
 }
-static void newEpsSave() {
+static void newEpsSave() {                                    // netTask (its own file)
   File f = LittleFS.open(NEW_PATH, "w");
   if (!f) return;
   JsonDocument d;
@@ -110,11 +146,12 @@ static void newEpsLoad() {
   f.close();
   nNew = n;
 }
-static void podsLoad() {                                      // after LittleFS.begin()
-  if (!pods) pods = (Pod *)heap_caps_calloc(MAX_PODS, sizeof(Pod), MALLOC_CAP_SPIRAM);
-  if (!eps) eps = (Episode *)heap_caps_calloc(MAX_EPS, sizeof(Episode), MALLOC_CAP_SPIRAM);
-  if (!podHits) podHits = (Pod *)heap_caps_calloc(POD_HITS, sizeof(Pod), MALLOC_CAP_SPIRAM);
-  if (!newEps) newEps = (NewEp *)heap_caps_calloc(MAX_NEW, sizeof(NewEp), MALLOC_CAP_SPIRAM);
+template <typename T> static T *psCalloc(size_t n) { return (T *)heap_caps_calloc(n, sizeof(T), MALLOC_CAP_SPIRAM); }
+static void podsLoad() {                                      // after LittleFS.begin() and favsLoad() (listMx)
+  pods = psCalloc<Pod>(MAX_PODS);
+  epIn = psCalloc<Episode>(MAX_EPS);  eps = psCalloc<Episode>(MAX_EPS);
+  podIn = psCalloc<Pod>(POD_HITS);    podHits = psCalloc<Pod>(POD_HITS);
+  newEps = psCalloc<NewEp>(MAX_NEW);  newArt = psCalloc<PodArt>(MAX_PODS);
   size_t pb = prefs.getBytesLength("played");
   if (pb && pb <= sizeof(played)) { prefs.getBytes("played", played, pb); nPlayed = pb / sizeof(uint32_t); playedPos = prefs.getUShort("playedPos", 0) % MAX_PLAYED; }
   if (newEps) newEpsLoad();
@@ -131,20 +168,8 @@ static void podsLoad() {                                      // after LittleFS.
     podsSave();
   }
 }
-static int podFind(const char *feed) {
-  for (int i = 0; i < nPods; i++) if (!strcmp(pods[i].feed, feed)) return i;
-  return -1;
-}
-static bool podToggle(const Pod &p) {                        // returns true if saved afterwards
-  int i = podFind(p.feed);
-  if (i >= 0) { memmove(&pods[i], &pods[i + 1], sizeof(Pod) * (nPods - i - 1)); nPods--; }
-  else { if (nPods >= MAX_PODS) return false; pods[nPods++] = p; }
-  podsSave();
-  reqNewEps = true;                                           // refresh "New" for the changed follow list
-  return i < 0;
-}
 
-// ───────────── RSS feed reader: streams the feed and stops after MAX_EPS episodes (feeds can be megabytes) ─────────────
+// ───────────── RSS feed reader: streams the feed and stops after `max` episodes (feeds can be megabytes) ─────────────
 class RssSink : public Stream {
 public:
   RssSink(Episode *out, int max) : out(out), max(max) { chanArt[0] = 0; }
@@ -191,6 +216,13 @@ private:
     }
     field = F_NONE; xl = 0;
   }
+  static void attr(const char *tag, const char *name, char *out, size_t n) {   // name="value" from a tag
+    const char *u = strstr(tag, name);
+    if (!u) return;
+    u += strlen(name);
+    const char *e = strchr(u, '"');
+    if (e && (size_t)(e - u) < n) { memcpy(out, u, e - u); out[e - u] = 0; }
+  }
   void onTag() {
     tag[tl] = 0;
     if (!strncmp(tag, "![CDATA[", 8)) {                       // <![CDATA[ text ]]> inside a field
@@ -205,18 +237,12 @@ private:
       return;
     }
     if (!inItem) {
-      if (!chanArt[0] && !strncmp(tag, "itunes:image ", 13)) {
-        const char *u = strstr(tag, "href=\"");
-        if (u) { u += 6; const char *e = strchr(u, '"'); if (e && e - u < (int)sizeof(chanArt)) { memcpy(chanArt, u, e - u); chanArt[e - u] = 0; } }
-      }
+      if (!chanArt[0] && !strncmp(tag, "itunes:image ", 13)) attr(tag, "href=\"", chanArt, sizeof(chanArt));
       return;
     }
     if (!strcmp(tag, "title")) { field = F_TITLE; xl = 0; }
     else if (!strcmp(tag, "pubDate")) { field = F_DATE; xl = 0; }
-    else if (!strncmp(tag, "enclosure ", 10)) {
-      const char *u = strstr(tag, "url=\"");
-      if (u) { u += 5; const char *e = strchr(u, '"'); if (e && e - u < (int)sizeof(cur.url)) { memcpy(cur.url, u, e - u); cur.url[e - u] = 0; unescape(cur.url); } }
-    }
+    else if (!strncmp(tag, "enclosure ", 10)) { attr(tag, "url=\"", cur.url, sizeof(cur.url)); unescape(cur.url); }
   }
   void feed(char c) {
     if (inTag) {
@@ -228,26 +254,42 @@ private:
     if (field != F_NONE) addText(&c, 1);
   }
 };
-static void podEpisodesFetch() {                              // netTask
-  RssSink sink(eps, MAX_EPS);
-  int code = eps ? httpStream(epFeed, sink) : -1;
-  nEps = (code == 200 || sink.n > 0) ? sink.n : -1;          // stopping early reports a write error: that's fine
-  strlcpy(epArt, sink.chanArt, sizeof(epArt));
-  int pi = podFind(epFeed);
-  if (pi >= 0 && sink.chanArt[0] && strcmp(pods[pi].art, sink.chanArt)) { strlcpy(pods[pi].art, sink.chanArt, sizeof(pods[0].art)); podsSave(); }
-  epVer++;
+
+// ───────────── one show's episodes ─────────────
+static void podEpisodesRequest(const char *feed) { strlcpy(epFeed, feed, sizeof(epFeed)); epWant++; }   // UI
+static void podEpisodesFetch() {                              // netTask, when epWant != epDone
+  uint16_t want = epWant;
+  char feed[256]; strlcpy(feed, epFeed, sizeof(feed));
+  RssSink sink(epIn, MAX_EPS);
+  int code = (epIn && eps) ? httpStream(feed, sink) : -1;
+  epInN = (code == 200 || sink.n > 0) ? sink.n : -1;          // stopping early reports a write error: that's fine
+  strlcpy(epInArt, sink.chanArt, sizeof(epInArt));
+  epDone = want;
+}
+static bool podEpisodesTake() {                               // UI: true once when the latest episodes have arrived
+  static uint16_t seen = 0;
+  if (epDone != epWant || epDone == seen) return false;
+  seen = epDone;
+  nEps = epInN;
+  if (nEps > 0) memcpy(eps, epIn, sizeof(Episode) * nEps);
+  strlcpy(epArt, epInArt, sizeof(epArt));
+  podArtApply(epFeed, epArt);
+  return true;
 }
 
-// netTask: read the first few episodes of every followed show, merge newest first
-static void newEpsFetch() {
-  if (!newEps || nPods == 0) { nNew = 0; newVer++; return; }
-  newLoading = true;
+// ───────────── "New": the first few episodes of every followed show, merged newest first ─────────────
+static void newEpsFetch() {                                   // netTask
+  if (!newEps) return;
+  LIST_LOCK();                                                // the follow list can change while we work: copy it
   int np = nPods;
-  Pod *snap = (Pod *)heap_caps_malloc(sizeof(Pod) * np, MALLOC_CAP_SPIRAM);
-  NewEp *all = (NewEp *)heap_caps_calloc(np * NEW_PER_SHOW, sizeof(NewEp), MALLOC_CAP_SPIRAM);
-  if (!snap || !all) { free(snap); free(all); newLoading = false; return; }
-  memcpy(snap, pods, sizeof(Pod) * np);                      // the follow list can change while we work
-  int n = 0;
+  Pod *snap = np ? psCalloc<Pod>(np) : nullptr;
+  if (snap) memcpy(snap, pods, sizeof(Pod) * np);
+  LIST_UNLOCK();
+  if (np == 0) { DATA_LOCK(); nNew = 0; DATA_UNLOCK(); newVer++; return; }
+  NewEp *all = psCalloc<NewEp>(np * NEW_PER_SHOW);
+  if (!snap || !all) { free(snap); free(all); return; }
+  newLoading = true;
+  int n = 0, na = 0;
   for (int i = 0; i < np; i++) {
     Episode buf[NEW_PER_SHOW];
     RssSink sink(buf, NEW_PER_SHOW);
@@ -259,32 +301,40 @@ static void newEpsFetch() {
       strlcpy(x.art, sink.chanArt[0] ? sink.chanArt : snap[i].art, sizeof(x.art));
       x.day = dayKey(buf[k].when);
     }
-    int pi = podFind(snap[i].feed);                            // remember covers found in the feed
-    if (pi >= 0 && sink.chanArt[0] && strcmp(pods[pi].art, sink.chanArt)) { strlcpy(pods[pi].art, sink.chanArt, sizeof(pods[0].art)); podsSave(); }
+    if (sink.chanArt[0] && strcmp(sink.chanArt, snap[i].art) && !newArtReady && newArt) {
+      strlcpy(newArt[na].feed, snap[i].feed, sizeof(newArt[0].feed));
+      strlcpy(newArt[na].art, sink.chanArt, sizeof(newArt[0].art));
+      na++;
+    }
   }
   std::sort(all, all + n, [](const NewEp &a, const NewEp &b) { return a.day > b.day; });
-  if (n > 0 || np == 0) {                                     // keep the old list if everything failed (no Wi-Fi)
+  if (n > 0) {                                                // keep the old list if everything failed (no Wi-Fi)
     DATA_LOCK();
     nNew = std::min(n, MAX_NEW);
     memcpy(newEps, all, sizeof(NewEp) * nNew);
     DATA_UNLOCK();
     newEpsSave();
   }
+  if (na) { nNewArt = na; newArtReady = true; }               // the UI keeps these covers (podsTick)
   free(snap); free(all);
   newLoading = false;
   newVer++;
 }
+static void podsTick() {                                      // UI: apply covers found while refreshing "New"
+  if (!newArtReady) return;
+  for (int i = 0; i < nNewArt; i++) podArtApply(newArt[i].feed, newArt[i].art);
+  newArtReady = false;
+}
 
-// Apple's podcast directory (free, no key)
-static void podSearchFetch() {                                // netTask
+// ───────────── Apple's podcast directory (free, no key) ─────────────
+static void podSearchRequest(const char *q) { strlcpy(podQuery, q, sizeof(podQuery)); podWant++; }   // UI
+static void podSearchFetch() {                                // netTask, when podWant != podDone
+  uint16_t want = podWant;
   String url = "https://itunes.apple.com/search?media=podcast&entity=podcast&limit=20&term=";
-  for (const char *c = podQuery; *c; c++) {
-    if (isalnum((unsigned char)*c) || *c == '-' || *c == '.') url += *c;
-    else { char h[4]; snprintf(h, sizeof(h), "%%%02X", (unsigned char)*c); url += h; }
-  }
+  urlEncodeAppend(url, podQuery);
   String body;
   int n = -1;
-  if (podHits && httpGet(url.c_str(), body) == 200) {
+  if (podIn && podHits && httpGet(url.c_str(), body) == 200) {
     JsonDocument filter;
     filter["results"][0]["collectionName"] = true; filter["results"][0]["artistName"] = true; filter["results"][0]["feedUrl"] = true; filter["results"][0]["artworkUrl100"] = true;
     JsonDocument doc;
@@ -294,13 +344,21 @@ static void podSearchFetch() {                                // netTask
         if (n >= POD_HITS) break;
         const char *f = r["feedUrl"] | "";
         if (!f[0] || strlen(f) >= sizeof(Pod::feed)) continue;
-        setPod(podHits[n], r["collectionName"] | "", r["artistName"] | "", f);
+        setPod(podIn[n], r["collectionName"] | "", r["artistName"] | "", f);
         const char *art = r["artworkUrl100"] | "";
-        if (strlen(art) < sizeof(podHits[0].art)) strlcpy(podHits[n].art, art, sizeof(podHits[0].art));
+        if (strlen(art) < sizeof(podIn[0].art)) strlcpy(podIn[n].art, art, sizeof(podIn[0].art));
         n++;
       }
     }
   }
-  nPodHits = n;
-  podHitVer++;
+  podInN = n;
+  podDone = want;
+}
+static bool podSearchTake() {                                 // UI
+  static uint16_t seen = 0;
+  if (podDone != podWant || podDone == seen) return false;
+  seen = podDone;
+  nPodHits = podInN;
+  if (nPodHits > 0) memcpy(podHits, podIn, sizeof(Pod) * nPodHits);
+  return true;
 }

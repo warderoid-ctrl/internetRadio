@@ -9,6 +9,14 @@ struct HttpOpts {
   uint32_t timeout = 10000;
 };
 
+// percent-encode q onto a URL (letters, digits, '-', '.' pass through)
+static void urlEncodeAppend(String &url, const char *q) {
+  for (const char *c = q; *c; c++) {
+    if (isalnum((unsigned char)*c) || *c == '-' || *c == '.') url += *c;
+    else { char h[4]; snprintf(h, sizeof(h), "%%%02X", (unsigned char)*c); url += h; }
+  }
+}
+
 static void httpPrep(HTTPClient &http, const HttpOpts &o) {
   http.setTimeout(o.timeout);
   http.setConnectTimeout(o.timeout);

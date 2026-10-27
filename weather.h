@@ -33,20 +33,19 @@ static void weatherSaveLocation(float lat, float lon, const char *place, const c
   reqWeather = true;
 }
 
-// place search (Open-Meteo geocoding, no key). The UI sets geoQuery + reqGeo; netTask fills geoHits, bumps geoVer.
+// place search (Open-Meteo geocoding, no key): geoRequest() from the UI, geoFetch() in netTask, geoTake() back in the UI.
 struct GeoHit { char name[40]; char detail[64]; char cc[3]; float lat, lon; };
 #define GEO_MAX 6
-static GeoHit geoHits[GEO_MAX];
-static volatile int geoN = 0;                          // -1 = search failed
-static volatile uint8_t geoVer = 0;
+static GeoHit geoIn[GEO_MAX], geoHits[GEO_MAX];         // netTask's buffer / the UI's copy (hand-over as radio_browser.h)
+static volatile int geoInN = 0;                         // -1 = search failed
+static int geoN = 0;
 static char geoQuery[48];
-static volatile bool reqGeo = false;
-static void geoFetch() {
+static volatile uint16_t geoWant = 0, geoDone = 0;
+static void geoRequest(const char *q) { strlcpy(geoQuery, q, sizeof(geoQuery)); geoWant++; }   // UI
+static void geoFetch() {                                // netTask, when geoWant != geoDone
+  uint16_t want = geoWant;
   String url = "https://geocoding-api.open-meteo.com/v1/search?count=" + String(GEO_MAX) + "&language=en&format=json&name=";
-  for (const char *c = geoQuery; *c; c++) {           // URL-encode the typed name
-    if (isalnum((unsigned char)*c) || *c == '-' || *c == '.') url += *c;
-    else { char h[4]; snprintf(h, sizeof(h), "%%%02X", (unsigned char)*c); url += h; }
-  }
+  urlEncodeAppend(url, geoQuery);
   String body;
   int n = -1;
   if (httpGet(url.c_str(), body) == 200) {
@@ -55,7 +54,7 @@ static void geoFetch() {
       n = 0;
       for (JsonObject r : doc["results"].as<JsonArray>()) {
         if (n >= GEO_MAX) break;
-        GeoHit &g = geoHits[n++];
+        GeoHit &g = geoIn[n++];
         copyAscii(g.name, sizeof(g.name), r["name"] | "");
         String d = String((const char *)(r["admin1"] | ""));
         const char *country = r["country"] | "";
@@ -66,8 +65,16 @@ static void geoFetch() {
       }
     }
   }
-  geoN = n;
-  geoVer++;
+  geoInN = n;
+  geoDone = want;
+}
+static bool geoTake() {                                 // UI: true once when the latest places have arrived
+  static uint16_t seen = 0;
+  if (geoDone != geoWant || geoDone == seen) return false;
+  seen = geoDone;
+  geoN = geoInN;
+  if (geoN > 0) memcpy(geoHits, geoIn, sizeof(GeoHit) * geoN);
+  return true;
 }
 
 static uint8_t wxKindOf(int c) {

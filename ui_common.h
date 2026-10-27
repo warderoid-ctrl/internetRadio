@@ -144,6 +144,69 @@ static lv_obj_t *scrollCol(lv_obj_t *parent, int x, int y, int w, int h, int gap
   return l;
 }
 
+// ───────────── shared widgets for the search / list screens ─────────────
+// one-line text field; onTap usually brings the keyboard up
+static lv_obj_t *textField(lv_obj_t *parent, int x, int y, int w, int h, const char *placeholder, lv_event_cb_t onTap) {
+  lv_obj_t *ta = lv_textarea_create(parent);
+  lv_obj_set_pos(ta, x, y);
+  lv_obj_set_size(ta, w, h);
+  lv_textarea_set_one_line(ta, true);
+  if (placeholder) lv_textarea_set_placeholder_text(ta, placeholder);
+  lv_obj_set_style_text_font(ta, F_M, 0);
+  lv_obj_set_style_bg_color(ta, lv_color_hex(C_CARD2), 0);
+  lv_obj_set_style_text_color(ta, lv_color_hex(C_TEXT), 0);
+  lv_obj_set_style_border_width(ta, 0, 0);
+  lv_obj_set_style_radius(ta, 18, 0);
+  if (onTap) lv_obj_add_event_cb(ta, onTap, LV_EVENT_CLICKED, nullptr);
+  return ta;
+}
+// on-screen keyboard docked at the bottom of parent, typing into ta; cb gets READY (Enter) / CANCEL
+static lv_obj_t *keyboardFor(lv_obj_t *parent, int w, int h, lv_obj_t *ta, lv_event_cb_t cb) {
+  lv_obj_t *kb = lv_keyboard_create(parent);
+  lv_obj_set_size(kb, w, h);
+  lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_obj_set_style_text_font(kb, F_M, 0);
+  lv_keyboard_set_textarea(kb, ta);
+  lv_obj_add_event_cb(kb, cb, LV_EVENT_ALL, nullptr);
+  return kb;
+}
+// the keyboard and the results list share the lower screen: show one, hide the other
+static void kbToggle(lv_obj_t *kb, lv_obj_t *list, bool showKb) {
+  if (showKb) { lv_obj_remove_flag(kb, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(list, LV_OBJ_FLAG_HIDDEN); }
+  else { lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN); lv_obj_remove_flag(list, LV_OBJ_FLAG_HIDDEN); }
+}
+// a tappable row in a scrollCol list
+static lv_obj_t *listRow(lv_obj_t *list, int w, int h) {
+  lv_obj_t *row = lv_button_create(list);
+  lv_obj_set_size(row, w, h);
+  lv_obj_set_style_pad_all(row, 4, 0);
+  lv_obj_set_style_bg_color(row, lv_color_hex(C_CARD2), 0);
+  lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(row, lv_color_hex(C_CARD3), LV_STATE_PRESSED);
+  lv_obj_set_style_radius(row, 18, 0);
+  lv_obj_set_style_shadow_width(row, 0, 0);
+  lv_obj_set_style_border_width(row, 0, 0);
+  return row;
+}
+// title (scrolls when too long) over a detail line (ends in "..."), starting at x
+static void rowText(lv_obj_t *row, int x, int w, const char *title, const char *detail) {
+  lv_obj_t *n = mkLabel(row, title, F_M, C_TEXT);
+  oneLine(n, w, true);
+  lv_obj_set_pos(n, x, 6);
+  lv_obj_t *d = mkLabel(row, detail, F_XS, C_MUTED);
+  oneLine(d, w, false);
+  lv_obj_set_pos(d, x, 36);
+}
+// one full-screen page (Wi-Fi, Find stations, weather location...) with a Back button
+static lv_obj_t *subScreen(lv_event_cb_t onBack, const char *title) {
+  lv_obj_t *scr = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(scr, lv_color_hex(C_BG), 0);
+  lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+  if (onBack) textBtn(scr, 20, 14, 120, 56, LV_SYMBOL_LEFT " Back", F_M, C_CARD3, onBack);
+  if (title) { lv_obj_t *t = mkLabel(scr, title, F_L, C_TEXT); lv_obj_set_pos(t, 160, 24); }
+  return scr;
+}
+
 // ───────────── weather icons drawn from shapes (no image assets) ─────────────
 enum WxKind : uint8_t { WX_CLEAR, WX_PARTLY, WX_CLOUD, WX_FOG, WX_DRIZZLE, WX_RAIN, WX_SNOW, WX_STORM };
 

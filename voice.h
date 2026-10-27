@@ -247,12 +247,16 @@ static bool localIntent(const char *t, char *reply, size_t rn) {
   if (has(t, "volume") || has(t, "set the volume")) { int v = firstNumber(k); if (v >= 0) { act(VA_VOL_SET, constrain(v > 21 ? v / 5 : v, 0, 21)); snprintf(reply, rn, "Volume set."); return true; } }
   if (hasAny(t, {"stop the radio", "turn off the radio", "radio off", "stop the music", "pause", "be quiet", "shut up", "stop playing", "turn off the music"})) { act(VA_STOP); snprintf(reply, rn, ""); return true; }
   if (hasAny(t, {"play", "radio", "music", "listen"})) {
-    for (int i = 0; i < nFavs; i++) {
-      char nm[48]; normalise(favs[i].name, nm, sizeof(nm));
-      char first[24]; strlcpy(first, nm, sizeof(first)); char *sp = strchr(first, ' '); if (sp && strlen(nm) > 5 && !strncmp(nm, "somafm", 6)) { /* "somafm groove salad" -> match tail words */ }
-      const char *tail = !strncmp(nm, "somafm ", 7) ? nm + 7 : nm;
+    char names[MAX_FAVS][48];                                  // favourites belong to the UI task: copy their names
+    LIST_LOCK();
+    int nf = nFavs;
+    for (int i = 0; i < nf; i++) strlcpy(names[i], favs[i].name, sizeof(names[0]));
+    LIST_UNLOCK();
+    for (int i = 0; i < nf; i++) {
+      char nm[48]; normalise(names[i], nm, sizeof(nm));
+      const char *tail = !strncmp(nm, "somafm ", 7) ? nm + 7 : nm;      // "somafm groove salad" -> "groove salad"
       if (strstr(t, tail) || (!strncmp(nm, "radio paradise", 14) && has(t, "paradise")) || (!strncmp(nm, "classic", 7) && has(t, "classic")) || (has(nm, "nts 1") && hasAny(t, {"nts one", "nts 1"})) || (has(nm, "nts 2") && hasAny(t, {"nts two", "nts 2"})) || (has(nm, "kexp") && has(t, "kexp")) || (has(nm, "jazz") && has(t, "jazz"))) {
-        act(VA_STATION, i); snprintf(reply, rn, "Playing %s.", favs[i].name); return true;
+        act(VA_STATION, i); snprintf(reply, rn, "Playing %s.", names[i]); return true;
       }
     }
     act(VA_RESUME); snprintf(reply, rn, "Playing the radio."); return true;
